@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f1117" />
+  <meta name="description" content="Prédictions football par IA — Coupons du jour" />
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+  <title>IA-BetPredict</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">⚽</span>
+        <span class="logo-text">IA<span class="logo-accent">Bet</span>Predict</span>
+      </div>
+      <div class="header-meta">
+        <span id="today-label" class="today-label"></span>
+        <span class="badge-live">LIVE IA</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- FILTRES -->
+  <section class="filters">
+    <div class="filters-inner">
+      <button class="filter-btn active" data-league="all">Toutes</button>
+      <button class="filter-btn" data-league="Veikkausliiga">🇫🇮 Finlande</button>
+      <button class="filter-btn" data-league="Eliteserien">🇳🇴 Norvège</button>
+      <button class="filter-btn" data-league="MLS">🇺🇸 MLS</button>
+      <button class="filter-btn" data-league="Serie A Brasil">🇧🇷 Brésil</button>
+    </div>
+  </section>
+
+  <!-- STATS BAR -->
+  <section class="stats-bar">
+    <div class="stat">
+      <span class="stat-value" id="stat-total">—</span>
+      <span class="stat-label">Coupons</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat">
+      <span class="stat-value" id="stat-avg">—</span>
+      <span class="stat-label">Confiance moy.</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat">
+      <span class="stat-value" id="stat-best">—</span>
+      <span class="stat-label">Meilleure proba</span>
+    </div>
+  </section>
+
+  <!-- COUPONS GRID -->
+  <main class="main">
+    <div id="loading" class="loading-state">
+      <div class="spinner"></div>
+      <p>Chargement des prédictions IA…</p>
+    </div>
+    <div id="empty" class="empty-state" style="display:none">
+      <p class="empty-icon">🔍</p>
+      <p>Aucun coupon éligible pour aujourd'hui.</p>
+      <p class="empty-sub">Les seuils de confiance n'ont pas été atteints.</p>
+    </div>
+    <div id="coupons-grid" class="coupons-grid" style="display:none"></div>
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <p>Prédictions générées par XGBoost · Usage éducatif uniquement</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
