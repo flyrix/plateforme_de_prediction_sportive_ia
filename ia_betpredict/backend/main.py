@@ -5,7 +5,7 @@ Point d'entrée FastAPI pour IA-BetPredict.
 
 Endpoints :
   GET  /                        → healthcheck
-  GET  /coupons                 → coupons du jour depuis Supabase
+  GET  /coupons                 → coupons du jour depuis Neon
   GET  /coupons/{date}          → coupons d'une date (YYYY-MM-DD)
   POST /run-daily-job           → déclenche le job manuellement (dev)
 """
@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from scheduler import create_scheduler, daily_prediction_job
-from supabase_client import get_client
+from db import execute
 
 
 # ---------------------------------------------------------------------------
@@ -67,12 +67,9 @@ async def get_todays_coupons(
     league: str | None = Query(default=None, description="Filtre par ligue"),
     min_confidence: float = Query(default=0.0, ge=0, le=1, description="Confiance minimale"),
 ):
-    """
-    Retourne les coupons du jour stockés dans Supabase,
-    triés par confiance décroissante.
-    """
+    """Retourne les coupons du jour triés par confiance décroissante."""
     today = date.today().isoformat()
-    return await _fetch_coupons(today, league, min_confidence)
+    return _fetch_coupons(today, league, min_confidence)
 
 
 @app.get("/coupons/{match_date}", tags=["Coupons"])
@@ -86,7 +83,7 @@ async def get_coupons_by_date(
         date.fromisoformat(match_date)
     except ValueError:
         raise HTTPException(status_code=400, detail="Format de date invalide. Utilise YYYY-MM-DD.")
-    return await _fetch_coupons(match_date, league, min_confidence)
+    return _fetch_coupons(match_date, league, min_confidence)
 
 
 @app.post("/run-daily-job", tags=["Admin"])
@@ -106,28 +103,26 @@ async def run_daily_job():
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _fetch_coupons(
-    match_date: str,
-    league: str | None,
-    min_confidence: float,
-) -> dict:
+def _fetch_coupons(match_date: str, league: str | None, min_confidence: float) -> dict:
     try:
-        db = get_client()
-        query = (
-            db.table("predictions_history")
-            .select("*")
-            .eq("match_date", match_date)
-            .gte("confidence_rate", min_confidence)
-            .order("confidence_rate", desc=True)
-        )
         if league:
-            query = query.eq("league", league)
+            sql = """
+                SELECT * FROM predictions_history
+                WHERE match_date = %s
+                  AND confidence_rate >= %s
+                  AND league = %s
+                ORDER BY confidence_rate DESC
+            """
+            rows = execute(sql, (match_date, min_confidence, league), fetch=True)
+        else:
+            sql = """
+                SELECT * FROM predictions_history
+                WHERE match_date = %s
+                  AND confidence_rate >= %s
+                ORDER BY confidence_rate DESC
+            """
+            rows = execute(sql, (match_date, min_confidence), fetch=True)
 
-        result = query.execute()
-        return {
-            "date":    match_date,
-            "count":   len(result.data),
-            "coupons": result.data,
-        }
+        return {"date": match_date, "count": len(rows), "coupons": rows}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erreur Supabase : {exc}")
+        raise HTTPException(status_code=500, detail=f"Erreur base de données : {exc}")
