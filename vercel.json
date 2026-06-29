@@ -1,3 +1,14 @@
 {
-  "outputDirectory": "frontend"
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "main.py"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/run-daily-job",
+      "schedule": "0 0 * * *"
+    }
+  ]
 }

@@ -20,19 +20,6 @@ from scheduler import create_scheduler, daily_prediction_job
 from db import execute
 
 
-# ---------------------------------------------------------------------------
-# Cycle de vie : démarrage / arrêt du scheduler
-# ---------------------------------------------------------------------------
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    scheduler = create_scheduler()
-    scheduler.start()
-    print("[main] ✅ Scheduler démarré — job quotidien programmé à 00:00 UTC")
-    yield
-    scheduler.shutdown()
-    print("[main] Scheduler arrêté.")
-
 
 # ---------------------------------------------------------------------------
 # Application
@@ -42,7 +29,7 @@ app = FastAPI(
     title="IA-BetPredict API",
     description="Prédictions sportives par XGBoost sur 4 ligues d'été",
     version="1.0.0",
-    lifespan=lifespan,
+    
 )
 
 app.add_middleware(
