@@ -1,50 +1,20 @@
 """
-db.py
------
-Connexion PostgreSQL via Neon (ou tout PostgreSQL standard).
-Utilise psycopg2 en mode synchrone + un pool de connexions léger.
-
-Neon fournit une DATABASE_URL au format :
-  postgresql://user:password@host.neon.tech/dbname?sslmode=require
+db.py (Optimisé pour Vercel Serverless)
 """
-
 import os
 import psycopg2
-from psycopg2 import pool
 from dotenv import load_dotenv
 
 load_dotenv()
 
-_pool: pool.SimpleConnectionPool | None = None
-
-
-def _get_pool() -> pool.SimpleConnectionPool:
-    global _pool
-    if _pool is None:
-        _pool = pool.SimpleConnectionPool(
-            minconn=1,
-            maxconn=5,
-            dsn=os.environ["DATABASE_URL"],
-        )
-    return _pool
-
-
 def get_conn():
-    """Retourne une connexion depuis le pool."""
-    return _get_pool().getconn()
-
-
-def release_conn(conn):
-    """Remet la connexion dans le pool."""
-    _get_pool().putconn(conn)
+    """Ouvre une connexion unique pour la requête Serverless actuelle."""
+    # Neon utilise le SSL obligatoire (?sslmode=require)
+    return psycopg2.connect(os.environ["DATABASE_URL"])
 
 
 def execute(query: str, params: tuple = (), fetch: bool = False):
-    """
-    Exécute une requête SQL.
-    - fetch=False  → INSERT / UPDATE / DELETE (retourne le nombre de lignes)
-    - fetch=True   → SELECT (retourne list[dict])
-    """
+    """Exécute une requête et ferme immédiatement la connexion."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -59,4 +29,5 @@ def execute(query: str, params: tuple = (), fetch: bool = False):
         conn.rollback()
         raise
     finally:
-        release_conn(conn)
+        # Crucial sur Vercel : On ferme TOUJOURS la connexion immédiatement
+        conn.close()
