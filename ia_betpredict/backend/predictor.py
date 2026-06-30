@@ -25,7 +25,8 @@ THRESHOLDS = {
 # Chargement des modèles (une seule fois au démarrage)
 # ---------------------------------------------------------------------------
 
-_MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+# Les modèles sont dans ia_betpredict/models/ (un niveau au-dessus de backend/)
+_MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
 
 def _load(filename: str):
     path = os.path.join(_MODELS_DIR, filename)
@@ -40,13 +41,14 @@ def _load(filename: str):
 
 # Les modèles sont chargés une seule fois à l'import du module
 try:
-    MODEL_DC    = _load("model_winner.pkl")     # Double Chance (1X et X2)
-    MODEL_OVER  = _load("model_goals.pkl") # 
-    MODEL_BTTS  = _load("model_btts.pkl")   # Both Teams To Score
-    
+    MODEL_DC    = _load("model_winner.pkl")  # Double Chance (1X et X2)
+    MODEL_OVER  = _load("model_goals.pkl")   # Over 2.5
+    MODEL_BTTS  = _load("model_btts.pkl")    # Both Teams To Score
     _MODELS_LOADED = True
+    print("[predictor] ✅ Modèles chargés avec succès.")
 except FileNotFoundError as _e:
-    print(f"[predictor]   {_e}")
+    print(f"[predictor] ⚠️  ATTENTION — Modèles introuvables : {_e}")
+    print("[predictor] ⚠️  Le serveur tourne en MODE DÉMO (probabilités aléatoires).")
     _MODELS_LOADED = False
 
 
@@ -77,8 +79,9 @@ def predict_match(features: dict) -> dict:
     Chaque modèle expose predict_proba ; on prend la classe positive (index 1).
     """
     if not _MODELS_LOADED:
-        # Mode démo : probabilités aléatoires pour tester le frontend
+        # Mode démo : probabilités fixes pour tester le frontend sans modèles
         import random
+        print("[predictor] ⚠️  predict_match() appelé en MODE DÉMO — résultats non fiables.")
         return {
             "Double Chance 1X": round(random.uniform(0.50, 0.90), 4),
             "Double Chance X2": round(random.uniform(0.50, 0.90), 4),

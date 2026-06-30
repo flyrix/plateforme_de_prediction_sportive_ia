@@ -1,8 +1,14 @@
 {
+  "builds": [
+    {
+      "src": "ia_betpredict/backend/main.py",
+      "use": "@vercel/python"
+    }
+  ],
   "rewrites": [
     {
-      "source": "/(.*)",
-      "destination": "main.py"
+      "source": "/api/(.*)",
+      "destination": "ia_betpredict/backend/main.py"
     }
   ],
   "crons": [

@@ -7,9 +7,10 @@
  */
 
 // ── Config ────────────────────────────────────────────────
-// Change cette URL par l'URL de ton API déployée (Railway / Render)
-// En développement : http://127.0.0.1:8000
-const API_BASE = "http://127.0.0.1:8000";
+// En production, définis la variable d'environnement VITE_API_BASE ou
+// remplace manuellement par l'URL Railway/Render de ton API déployée.
+// Ex : const API_BASE = "https://ia-betpredict.up.railway.app";
+const API_BASE = window.ENV_API_BASE || "http://127.0.0.1:8000";
 
 // Icônes des ligues
 const LEAGUE_FLAGS = {

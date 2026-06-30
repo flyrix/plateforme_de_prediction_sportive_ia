@@ -101,6 +101,20 @@ async def get_todays_coupons(
     return _fetch_coupons(today, league, min_confidence)
 
 
+@app.get("/coupons/{date}", tags=["Coupons"])
+async def get_coupons_by_date(
+    date: str,
+    league: str | None = Query(default=None),
+    min_confidence: float = Query(default=0.0, ge=0, le=1),
+):
+    """Retourne les coupons pour une date donnée au format YYYY-MM-DD."""
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format de date invalide. Utilisez YYYY-MM-DD.")
+    return _fetch_coupons(date, league, min_confidence)
+
+
 @app.post("/run-daily-job", tags=["Admin / Vercel Cron"])
 async def run_daily_job():
     """Déclenché par le Vercel Cron toutes les nuits à 00:00 UTC"""

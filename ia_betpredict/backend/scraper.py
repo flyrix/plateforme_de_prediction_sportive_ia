@@ -68,21 +68,24 @@ def _get(url: str, retries: int = 3) -> dict | None:
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
     """
     Retourne la liste des matchs pour une ligue et une date (YYYY-MM-DD).
-    Chaque élément contient les IDs des deux équipes et les infos du match.
+    Utilise l'endpoint /scheduled/inverse de Sofascore qui filtre directement
+    par date, évitant ainsi de rater des matchs hors de la première page next/0.
     """
-    url = f"{BASE_URL}/tournament/{tournament_id}/events/next/0"
+    # Endpoint filtré par date (plus fiable que next/0)
+    url = f"{BASE_URL}/sport/football/scheduled-events/{date_str}"
     data = _get(url)
     if not data:
         return []
 
     matches = []
     for event in data.get("events", []):
-        # Sofascore stocke le timestamp Unix en UTC
-        ts = event.get("startTimestamp", 0)
-        event_date = datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
-        if event_date != date_str:
+        # On filtre uniquement les matchs appartenant au tournoi cible
+        tournament = event.get("tournament", {})
+        unique_tournament = tournament.get("uniqueTournament", {})
+        if unique_tournament.get("id") != tournament_id:
             continue
 
+        ts = event.get("startTimestamp", 0)
         matches.append({
             "league":        league_name,
             "match_name":    f"{event['homeTeam']['name']} vs {event['awayTeam']['name']}",
