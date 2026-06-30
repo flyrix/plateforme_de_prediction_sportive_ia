@@ -69,6 +69,11 @@
       <p>Aucun coupon éligible pour aujourd'hui.</p>
       <p class="empty-sub">Les seuils de confiance n'ont pas été atteints.</p>
     </div>
+    <div id="error-state" class="empty-state" style="display:none">
+      <p class="empty-icon">⚠️</p>
+      <p class="error-msg">Impossible de joindre l'API.</p>
+      <p class="empty-sub">Vérifie que le backend est démarré et que l'URL est correcte.</p>
+    </div>
     <div id="coupons-grid" class="coupons-grid" style="display:none"></div>
   </main>
 
@@ -77,6 +82,8 @@
     <p>Prédictions générées par XGBoost · Usage éducatif uniquement</p>
   </footer>
 
+  <!-- En production, injecte l'URL de l'API avant app.js -->
+  <!-- <script>window.ENV_API_BASE = "https://ton-api.vercel.app";</script> -->
   <script src="app.js"></script>
 </body>
 </html>

@@ -56,14 +56,12 @@ async function loadCoupons() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     allCoupons = data.coupons || [];
+    renderCoupons();
+    updateStats();
   } catch (err) {
     console.error("[app] Erreur API :", err);
-    // Données de démo si l'API n'est pas encore lancée
-    allCoupons = getDemoCoupons();
+    showState("error", `Impossible de joindre l'API. (${err.message})`);
   }
-
-  renderCoupons();
-  updateStats();
 }
 
 // ── Render ────────────────────────────────────────────────
@@ -162,19 +160,18 @@ function setupFilters() {
 }
 
 // ── UI states ─────────────────────────────────────────────
-function showState(state) {
+function showState(state, message = "") {
   $loading.style.display = state === "loading" ? "flex"  : "none";
   $empty.style.display   = state === "empty"   ? "block" : "none";
   $grid.style.display    = state === "grid"    ? "flex"  : "none";
+
+  const $err = document.getElementById("error-state");
+  if ($err) {
+    $err.style.display = state === "error" ? "block" : "none";
+    if (state === "error" && message) $err.querySelector(".error-msg").textContent = message;
+  }
 }
 
-// ── Données de démo (si l'API n'est pas encore lancée) ────
-function getDemoCoupons() {
-  return [
-    { match_name: "Inter Miami vs LA Galaxy", league: "MLS", home_team: "Inter Miami", away_team: "LA Galaxy", match_time: "01:30", prediction_type: "Double Chance 1X", confidence_rate: 0.741, status: "En attente" },
-    { match_name: "HJK Helsinki vs SJK", league: "Veikkausliiga", home_team: "HJK Helsinki", away_team: "SJK", match_time: "17:00", prediction_type: "Over 2.5", confidence_rate: 0.682, status: "En attente" },
-    { match_name: "Flamengo vs Palmeiras", league: "Serie A Brasil", home_team: "Flamengo", away_team: "Palmeiras", match_time: "23:00", prediction_type: "BTTS", confidence_rate: 0.631, status: "En attente" },
-    { match_name: "Bodø/Glimt vs Rosenborg", league: "Eliteserien", home_team: "Bodø/Glimt", away_team: "Rosenborg", match_time: "19:00", prediction_type: "Double Chance 1X", confidence_rate: 0.798, status: "En attente" },
-    { match_name: "Seattle Sounders vs Portland", league: "MLS", home_team: "Seattle Sounders", away_team: "Portland Timbers", match_time: "03:00", prediction_type: "Over 2.5", confidence_rate: 0.611, status: "En attente" },
-  ];
-}
+// ── Données de démo supprimées ────────────────────────────
+// Le frontend affiche désormais une vraie erreur si l'API
+// n'est pas disponible, au lieu de données fictives.

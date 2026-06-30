@@ -167,6 +167,7 @@ body {
 }
 .empty-icon { font-size: 40px; margin-bottom: 12px; }
 .empty-sub { font-size: 13px; color: var(--text-muted); margin-top: 6px; }
+.error-msg { font-weight: 600; color: #f87171; margin-top: 8px; }
 
 /* ── GRID COUPONS ── */
 .coupons-grid { display: flex; flex-direction: column; gap: 12px; }

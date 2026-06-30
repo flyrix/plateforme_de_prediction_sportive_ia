@@ -37,9 +37,11 @@ cp ia_betpredict/.env.example ia_betpredict/.env
 # Édite .env avec ta DATABASE_URL Neon
 ```
 
-Contenu du fichier `.env` :
+Contenu du fichier `.env` (basé sur `.env.example`) :
 ```
 DATABASE_URL=postgresql://<user>:<password>@<host>/<db>?sslmode=require
+CRON_SECRET=une_cle_aleatoire_secrete
+ALLOWED_ORIGINS=https://ia-betpredict.vercel.app
 ```
 
 ### 4. Modèles XGBoost
@@ -76,12 +78,21 @@ ou utilise l'extension Live Server de VS Code.
 | GET | `/` | Healthcheck |
 | GET | `/coupons` | Coupons du jour |
 | GET | `/coupons/{date}` | Coupons d'une date (YYYY-MM-DD) |
+| PATCH | `/coupons/{id}/status` | Mise à jour statut (Gagné/Perdu/En attente) |
 | POST | `/run-daily-job` | Déclenche le job manuellement |
 
 ### Filtres disponibles
 ```
 GET /coupons?league=MLS&min_confidence=0.70
 GET /coupons/2025-07-10?league=Eliteserien&min_confidence=0.65
+```
+
+### Sécurisation du job cron
+Le endpoint `/run-daily-job` et `PATCH /coupons/{id}/status` sont protégés
+par le header `X-Cron-Secret`. Définis `CRON_SECRET` dans Vercel et utilise-le :
+```bash
+curl -X POST https://ton-api.vercel.app/run-daily-job \
+  -H "X-Cron-Secret: ton_secret"
 ```
 
 ---
@@ -93,9 +104,9 @@ ia-betpredict/
 ├── ia_betpredict/
 │   ├── backend/
 │   │   ├── main.py          # FastAPI + routes + Vercel Cron job
-│   │   ├── scraper.py       # Sofascore data fetcher (endpoint filtré par date)
+│   │   ├── scraper.py       # Sofascore data fetcher (1 appel HTTP par date)
 │   │   ├── predictor.py     # Chargement .pkl + génération coupons
-│   │   ├── db.py            # Connexion PostgreSQL (Neon, serverless-safe)
+│   │   ├── db.py            # Connexion PostgreSQL (Neon, serverless-safe + retry)
 │   │   ├── schema.sql       # Schéma à exécuter dans Neon
 │   │   └── requirements.txt
 │   ├── models/
@@ -106,8 +117,9 @@ ia-betpredict/
 ├── index.html               # Frontend PWA
 ├── style.css
 ├── app.js
+├── manifest.json            # Manifest PWA
 ├── vercel.json              # Config Vercel (builds + cron)
-└── .env.example
+└── .env.example             # Template des variables d'environnement
 ```
 
 ---

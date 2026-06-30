@@ -100,18 +100,45 @@ def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str
 
 
 def fetch_all_matches(date_str: str | None = None) -> list[dict]:
-    """Agrège les matchs du jour pour toutes les ligues cibles."""
+    """
+    Agrège les matchs du jour pour toutes les ligues cibles.
+    Un seul appel HTTP vers Sofascore (endpoint par date), puis
+    filtrage local par tournament_id — au lieu de 4 appels séparés.
+    """
     if date_str is None:
         date_str = datetime.date.today().isoformat()
 
-    all_matches = []
-    for league_name, tid in LEAGUE_IDS.items():
-        print(f"[scraper] Récupération {league_name} ({date_str})…")
-        matches = fetch_matches_for_league(league_name, tid, date_str)
-        all_matches.extend(matches)
-        time.sleep(1)  # politesse vis-à-vis de Sofascore
+    print(f"[scraper] Récupération de tous les matchs ({date_str})…")
+    url = f"{BASE_URL}/sport/football/scheduled-events/{date_str}"
+    data = _get(url)
+    if not data:
+        print(f"[scraper] ❌ Aucune réponse de Sofascore pour le {date_str}")
+        return []
 
-    print(f"[scraper] {len(all_matches)} match(s) trouvé(s) pour le {date_str}")
+    # Index inverse : tournament_id → league_name pour filtrage O(1)
+    id_to_league = {v: k for k, v in LEAGUE_IDS.items()}
+
+    all_matches = []
+    for event in data.get("events", []):
+        unique_tournament = event.get("tournament", {}).get("uniqueTournament", {})
+        tid = unique_tournament.get("id")
+        league_name = id_to_league.get(tid)
+        if league_name is None:
+            continue
+
+        ts = event.get("startTimestamp", 0)
+        all_matches.append({
+            "league":        league_name,
+            "match_name":    f"{event['homeTeam']['name']} vs {event['awayTeam']['name']}",
+            "home_team_id":  event["homeTeam"]["id"],
+            "away_team_id":  event["awayTeam"]["id"],
+            "home_team":     event["homeTeam"]["name"],
+            "away_team":     event["awayTeam"]["name"],
+            "match_time":    datetime.datetime.utcfromtimestamp(ts).strftime("%H:%M"),
+            "event_id":      event["id"],
+        })
+
+    print(f"[scraper] ✅ {len(all_matches)} match(s) trouvé(s) pour le {date_str}")
     return all_matches
 
 

@@ -4,8 +4,9 @@ main.py
 Point d'entrée FastAPI optimisé pour Vercel Serverless.
 """
 
+import os
 import datetime
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 
 from scraper import fetch_matches_with_features
@@ -18,12 +19,20 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Restreindre les origines CORS en production via la variable ALLOWED_ORIGINS
+# Ex : ALLOWED_ORIGINS="https://ia-betpredict.vercel.app"
+_CORS_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # À restreindre en production si besoin
-    allow_methods=["*"],
+    allow_origins=_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
+
+# Clé secrète pour protéger le endpoint /run-daily-job
+# Définis CRON_SECRET dans les variables d'environnement Vercel
+_CRON_SECRET = os.environ.get("CRON_SECRET", "")
 
 # ---------------------------------------------------------------------------
 # Le Job Quotidien (Anciennement dans scheduler.py)
@@ -115,9 +124,30 @@ async def get_coupons_by_date(
     return _fetch_coupons(date, league, min_confidence)
 
 
+@app.patch("/coupons/{coupon_id}/status", tags=["Coupons"])
+async def update_coupon_status(
+    coupon_id: str,
+    status: str = Query(..., pattern="^(Gagné|Perdu|En attente|Annulé)$"),
+    x_cron_secret: str | None = Header(default=None),
+):
+    """
+    Met à jour le statut d'un coupon (Gagné / Perdu / En attente / Annulé).
+    coupon_id est un UUID (correspond à la colonne id de Neon).
+    Protégé par le même CRON_SECRET que le job quotidien.
+    """
+    _verify_cron_secret(x_cron_secret)
+    sql = "UPDATE predictions_history SET status = %s WHERE id = %s::uuid"
+    updated = execute(sql, (status, coupon_id))
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Coupon {coupon_id} introuvable.")
+    return {"status": "ok", "coupon_id": coupon_id, "new_status": status}
+
+
 @app.post("/run-daily-job", tags=["Admin / Vercel Cron"])
-async def run_daily_job():
-    """Déclenché par le Vercel Cron toutes les nuits à 00:00 UTC"""
+async def run_daily_job(x_cron_secret: str | None = Header(default=None)):
+    """Déclenché par le Vercel Cron toutes les nuits à 00:00 UTC.
+    Protégé par le header X-Cron-Secret."""
+    _verify_cron_secret(x_cron_secret)
     try:
         await daily_prediction_job()
         return {"status": "ok", "message": "Job exécuté par Vercel avec succès"}
@@ -128,6 +158,12 @@ async def run_daily_job():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _verify_cron_secret(provided: str | None) -> None:
+    """Vérifie le header X-Cron-Secret. Bloque si CRON_SECRET est défini en prod."""
+    if _CRON_SECRET and provided != _CRON_SECRET:
+        raise HTTPException(status_code=401, detail="Non autorisé : X-Cron-Secret invalide.")
+
+
 def _fetch_coupons(match_date: str, league: str | None, min_confidence: float) -> dict:
     try:
         if league:

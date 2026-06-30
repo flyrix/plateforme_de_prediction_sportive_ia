@@ -2,15 +2,35 @@
 db.py (Optimisé pour Vercel Serverless)
 """
 import os
+import time
 import psycopg2
 from dotenv import load_dotenv
 
 load_dotenv()
 
-def get_conn():
-    """Ouvre une connexion unique pour la requête Serverless actuelle."""
-    # Neon utilise le SSL obligatoire (?sslmode=require)
-    return psycopg2.connect(os.environ["DATABASE_URL"])
+_DB_URL = os.environ.get("DATABASE_URL", "")
+
+
+def get_conn(retries: int = 3, delay: float = 1.0):
+    """
+    Ouvre une connexion Neon avec retry automatique.
+    Neon peut mettre quelques ms à sortir du mode "sleep" (cold start).
+    """
+    if not _DB_URL:
+        raise RuntimeError(
+            "DATABASE_URL non définie. "
+            "Vérifie ton fichier .env ou les variables Vercel."
+        )
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            return psycopg2.connect(_DB_URL)
+        except psycopg2.OperationalError as exc:
+            last_exc = exc
+            print(f"[db] Tentative {attempt}/{retries} échouée : {exc}")
+            if attempt < retries:
+                time.sleep(delay * attempt)
+    raise last_exc
 
 
 def execute(query: str, params: tuple = (), fetch: bool = False):
