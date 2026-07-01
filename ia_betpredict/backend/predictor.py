@@ -22,34 +22,62 @@ THRESHOLDS = {
 }
 
 # ---------------------------------------------------------------------------
+# Mapping ligue → groupe (pour charger le bon modèle spécialisé)
+# ---------------------------------------------------------------------------
+
+LEAGUE_TO_GROUP = {
+    "Veikkausliiga":   "nordique",
+    "Eliteserien":     "nordique",
+    "MLS":             "americain",
+    "Serie A Brasil":  "sud_americain",
+    "Club Friendlies": "amicaux",
+}
+
+# ---------------------------------------------------------------------------
 # Chargement des modèles (une seule fois au démarrage)
 # ---------------------------------------------------------------------------
 
-# Les modèles sont dans ia_betpredict/models/ (un niveau au-dessus de backend/)
-_MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
+_MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models")
 
 def _load(filename: str):
-    path = os.path.join(_MODELS_DIR, filename)
+    path = os.path.normpath(os.path.join(_MODELS_DIR, filename))
     if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"Modèle introuvable : {path}\n"
-            "Place tes fichiers .pkl dans backend/models/ "
-            "(export depuis Colab avec joblib.dump)."
-        )
+        raise FileNotFoundError(path)
     return joblib.load(path)
 
+def _load_group(group: str) -> dict | None:
+    """Charge les 3 modèles spécialisés pour un groupe. Retourne None si absents."""
+    try:
+        return {
+            "dc":   _load(f"model_winner_{group}.pkl"),
+            "over": _load(f"model_goals_{group}.pkl"),
+            "btts": _load(f"model_btts_{group}.pkl"),
+        }
+    except FileNotFoundError:
+        return None
 
-# Les modèles sont chargés une seule fois à l'import du module
+# Modèles globaux (fallback)
 try:
-    MODEL_DC    = _load("model_winner.pkl")  # Double Chance (1X et X2)
-    MODEL_OVER  = _load("model_goals.pkl")   # Over 2.5
-    MODEL_BTTS  = _load("model_btts.pkl")    # Both Teams To Score
+    _GLOBAL = {
+        "dc":   _load("model_winner.pkl"),
+        "over": _load("model_goals.pkl"),
+        "btts": _load("model_btts.pkl"),
+    }
     _MODELS_LOADED = True
-    print("[predictor] ✅ Modèles chargés avec succès.")
+    print("[predictor] ✅ Modèles globaux chargés.")
 except FileNotFoundError as _e:
-    print(f"[predictor] ⚠️  ATTENTION — Modèles introuvables : {_e}")
-    print("[predictor] ⚠️  Le serveur tourne en MODE DÉMO (probabilités aléatoires).")
+    print(f"[predictor] ⚠️  Modèles introuvables : {_e}")
+    print("[predictor] ⚠️  MODE DÉMO activé.")
+    _GLOBAL = None
     _MODELS_LOADED = False
+
+# Modèles spécialisés (optionnels, prioritaires si présents)
+_SPECIALIZED: dict[str, dict] = {}
+for _g in ["nordique", "americain", "sud_americain", "amicaux", "global"]:
+    _m = _load_group(_g)
+    if _m:
+        _SPECIALIZED[_g] = _m
+        print(f"[predictor] ✅ Modèle spécialisé '{_g}' chargé.")
 
 
 # ---------------------------------------------------------------------------
@@ -61,10 +89,9 @@ FEATURE_COLUMNS = [
     "away_goals_exp",
     "diff_goals_exp",
     "total_goals_exp",
-    "Country_encoded",
 ]
 
-# Encodage des pays (doit correspondre au LabelEncoder utilisé à l'entraînement)
+# Country_encoded gardé pour compatibilité avec les anciens modèles globaux
 COUNTRY_ENCODING = {
     "Veikkausliiga":   0,
     "Eliteserien":     1,
@@ -73,9 +100,12 @@ COUNTRY_ENCODING = {
     "Club Friendlies": 4,
 }
 
+FEATURE_COLUMNS_LEGACY = FEATURE_COLUMNS + ["Country_encoded"]
 
-def _features_to_df(features: dict) -> pd.DataFrame:
-    row = {col: features.get(col, 0.0) for col in FEATURE_COLUMNS}
+
+def _features_to_df(features: dict, legacy: bool = False) -> pd.DataFrame:
+    cols = FEATURE_COLUMNS_LEGACY if legacy else FEATURE_COLUMNS
+    row = {col: features.get(col, 0.0) for col in cols}
     return pd.DataFrame([row])
 
 
@@ -83,16 +113,14 @@ def _features_to_df(features: dict) -> pd.DataFrame:
 # Génération des coupons
 # ---------------------------------------------------------------------------
 
-def predict_match(features: dict) -> dict:
+def predict_match(features: dict, league: str = "") -> dict:
     """
-    Retourne les probabilités brutes pour tous les marchés.
-    - model_winner : XGBClassifier 3 classes (0=1X, 1=X2, 2=2)
-    - model_goals  : XGBRegressor  -> prédit le nombre de buts total
-    - model_btts   : XGBClassifier binaire (0=non, 1=oui)
+    Utilise le modèle spécialisé pour la ligue si disponible,
+    sinon le modèle global (legacy avec Country_encoded).
     """
-    if not _MODELS_LOADED:
+    if not _MODELS_LOADED and not _SPECIALIZED:
         import random
-        print("[predictor] ⚠️  predict_match() appelé en MODE DÉMO — résultats non fiables.")
+        print("[predictor] ⚠️  MODE DÉMO")
         return {
             "Double Chance 1X": round(random.uniform(0.50, 0.90), 4),
             "Double Chance X2": round(random.uniform(0.50, 0.90), 4),
@@ -100,22 +128,37 @@ def predict_match(features: dict) -> dict:
             "BTTS":             round(random.uniform(0.45, 0.85), 4),
         }
 
-    X = _features_to_df(features)
+    # Choisir le bon modèle : spécialisé > global spécialisé > legacy
+    group = LEAGUE_TO_GROUP.get(league, "")
+    models = (
+        _SPECIALIZED.get(group)
+        or _SPECIALIZED.get("global")
+        or _GLOBAL
+    )
 
-    # Double Chance : classe 0 = 1X, classe 1 = X2
-    dc_proba = MODEL_DC.predict_proba(X)[0]
+    # Déterminer si on utilise les features legacy (avec Country_encoded)
+    is_legacy = (models is _GLOBAL)
+    X = _features_to_df(features, legacy=is_legacy)
 
-    # Over 2.5 : régresseur -> prédit buts totaux, on convertit en probabilité
-    # On utilise une sigmoïde centrée sur 2.5 pour obtenir une proba [0,1]
-    import math
-    goals_pred = float(MODEL_OVER.predict(X)[0])
-    over25_proba = round(1 / (1 + math.exp(-(goals_pred - 2.5))), 4)
+    source = f"spécialisé '{group}'" if not is_legacy else "global (legacy)"
+    print(f"[predictor] Modèle utilisé : {source} pour {league}")
+
+    dc_proba   = models["dc"].predict_proba(X)[0]
+    btts_proba = models["btts"].predict_proba(X)[0][1]
+
+    # Over 2.5 : classifieur si nouveau modèle, régresseur si legacy
+    if hasattr(models["over"], "predict_proba"):
+        over_proba = models["over"].predict_proba(X)[0][1]
+    else:
+        import math
+        goals_pred = float(models["over"].predict(X)[0])
+        over_proba = round(1 / (1 + math.exp(-(goals_pred - 2.5))), 4)
 
     return {
         "Double Chance 1X": round(float(dc_proba[0]), 4),
         "Double Chance X2": round(float(dc_proba[1]), 4),
-        "Over 2.5":         over25_proba,
-        "BTTS":             round(float(MODEL_BTTS.predict_proba(X)[0][1]), 4),
+        "Over 2.5":         round(float(over_proba), 4),
+        "BTTS":             round(float(btts_proba), 4),
     }
 
 
@@ -132,7 +175,7 @@ def generate_coupons(match: dict) -> list[dict]:
     }
     """
     features   = match.get("features", {})
-    probas     = predict_match(features)
+    probas     = predict_match(features, league=match.get("league", ""))
     coupons    = []
 
     for market, confidence in probas.items():

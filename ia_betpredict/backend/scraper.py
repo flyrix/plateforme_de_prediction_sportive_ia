@@ -154,7 +154,7 @@ def compute_features(match: dict) -> dict:
     home_exp = home_stats["avg_scored"]
     away_exp = away_stats["avg_scored"]
 
-    # Country_encoded : encodage de la ligue (doit correspondre à l'entraînement)
+    # Country_encoded gardé pour compatibilité avec les anciens modèles
     from predictor import COUNTRY_ENCODING
     country_enc = COUNTRY_ENCODING.get(match["league"], 0)
 
@@ -163,7 +163,7 @@ def compute_features(match: dict) -> dict:
         "away_goals_exp":  away_exp,
         "diff_goals_exp":  round(home_exp - away_exp, 2),
         "total_goals_exp": round(home_exp + away_exp, 2),
-        "Country_encoded": country_enc,
+        "Country_encoded": country_enc,  # legacy
     }
 
 
