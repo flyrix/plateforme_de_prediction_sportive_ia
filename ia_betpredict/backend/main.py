@@ -5,7 +5,14 @@ Point d'entrée FastAPI optimisé pour Vercel Serverless.
 """
 
 import os
+import sys
 import datetime
+
+# Vercel exécute ce fichier depuis la racine du projet.
+# On ajoute le dossier backend/ au path pour que les imports
+# relatifs (scraper, predictor, db) fonctionnent correctement.
+sys.path.insert(0, os.path.dirname(__file__))
+
 from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 
