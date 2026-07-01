@@ -79,11 +79,13 @@ async def daily_prediction_job():
              match_time, prediction_type, confidence_rate, status)
         VALUES
             (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (match_date, match_name, prediction_type) DO NOTHING
     """
     inserted = 0
+    skipped = 0
     for c in all_coupons:
         try:
-            execute(sql, (
+            rows = execute(sql, (
                 today,
                 c["match_name"],
                 c["league"],
@@ -94,11 +96,14 @@ async def daily_prediction_job():
                 c["confidence_rate"],
                 c["status"],
             ))
-            inserted += 1
+            if rows:
+                inserted += 1
+            else:
+                skipped += 1
         except Exception as exc:
             print(f"[Vercel Cron] ⚠️ Erreur insertion {c['match_name']} : {exc}")
 
-    print(f"[Vercel Cron] ✅ {inserted} coupon(s) insérés dans Neon")
+    print(f"[Vercel Cron] ✅ {inserted} coupon(s) insérés, {skipped} doublon(s) ignorés")
 
 
 # ---------------------------------------------------------------------------
