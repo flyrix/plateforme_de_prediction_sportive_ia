@@ -1,23 +1,4 @@
 {
-  "builds": [
-    {
-      "src": "ia_betpredict/backend/main.py",
-      "use": "@vercel/python",
-      "config": {
-        "maxLambdaSize": "50mb",
-        "includeFiles": [
-          "ia_betpredict/backend/**",
-          "ia_betpredict/models/**"
-        ]
-      }
-    }
-  ],
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "ia_betpredict/backend/main.py"
-    }
-  ],
   "crons": [
     {
       "path": "/run-daily-job",
