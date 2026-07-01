@@ -155,6 +155,7 @@ Pour pointer le frontend vers l'API de production, ajoute dans `index.html`
 | 🇳🇴 Norvège | Eliteserien | 20 |
 | 🇺🇸 États-Unis | MLS | 242 |
 | 🇧🇷 Brésil | Série A | 325 |
+| 🤝 International | Club Friendly Games | 853 |
 
 ---
 

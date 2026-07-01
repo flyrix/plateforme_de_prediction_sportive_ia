@@ -14,10 +14,11 @@ const API_BASE = window.ENV_API_BASE || "http://127.0.0.1:8000";
 
 // Icônes des ligues
 const LEAGUE_FLAGS = {
-  "Veikkausliiga":  "🇫🇮",
-  "Eliteserien":    "🇳🇴",
-  "MLS":            "🇺🇸",
-  "Serie A Brasil": "🇧🇷",
+  "Veikkausliiga":   "🇫🇮",
+  "Eliteserien":     "🇳🇴",
+  "MLS":             "🇺🇸",
+  "Serie A Brasil":  "🇧🇷",
+  "Club Friendlies": "🤝",
 };
 
 // ── State ─────────────────────────────────────────────────

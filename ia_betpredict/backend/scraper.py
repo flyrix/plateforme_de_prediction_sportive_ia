@@ -27,10 +27,11 @@ HEADERS = {
 BASE_URL = "https://api.sofascore.com/api/v1"
 
 LEAGUE_IDS = {
-    "Veikkausliiga":  41,    # Finlande
-    "Eliteserien":    20,    # Norvège
-    "MLS":            242,   # États-Unis
-    "Serie A Brasil": 325,   # Brésil
+    "Veikkausliiga":     41,    # Finlande
+    "Eliteserien":       20,    # Norvège
+    "MLS":               242,   # États-Unis
+    "Serie A Brasil":    325,   # Brésil
+    "Club Friendlies":   853,   # Matchs amicaux de clubs
 }
 
 FORM_WINDOW = 5
