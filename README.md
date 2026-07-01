@@ -151,8 +151,8 @@ Pour pointer le frontend vers l'API de production, ajoute dans `index.html`
 
 | Pays | Ligue | ID Sofascore |
 |---|---|---|
-| 🇫🇮 Finlande | Veikkausliiga | 238 |
-| 🇳🇴 Norvège | Eliteserien | 36 |
+| 🇫🇮 Finlande | Veikkausliiga | 41 |
+| 🇳🇴 Norvège | Eliteserien | 20 |
 | 🇺🇸 États-Unis | MLS | 242 |
 | 🇧🇷 Brésil | Série A | 325 |
 
