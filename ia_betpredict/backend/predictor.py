@@ -85,10 +85,16 @@ for _g in ["nordique", "americain", "sud_americain", "amicaux", "global"]:
 # ---------------------------------------------------------------------------
 
 FEATURE_COLUMNS = [
-    "home_goals_exp",
-    "away_goals_exp",
-    "diff_goals_exp",
-    "total_goals_exp",
+    "home_goals_exp",    "away_goals_exp",
+    "diff_goals_exp",    "total_goals_exp",
+    "home_conceded_exp", "away_conceded_exp",
+    "home_form_pts",     "away_form_pts",
+    "home_win_rate",     "away_win_rate",
+    "home_btts_rate",    "away_btts_rate",
+    "home_over25_rate",  "away_over25_rate",
+    "days_since_last_h", "days_since_last_a",
+    "h2h_over25_rate",   "h2h_btts_rate",
+    "is_neutral_ground",
 ]
 
 # Country_encoded gardé pour compatibilité avec les anciens modèles globaux

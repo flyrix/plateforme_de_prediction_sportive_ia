@@ -120,50 +120,107 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Calcul des features (moyennes glissantes)
+# Calcul des features enrichies
 # ---------------------------------------------------------------------------
 
-def _get_team_last_n_goals(team_id: int, n: int = FORM_WINDOW) -> dict:
+def _get_team_features(team_id: int) -> dict:
+    """Calcule toutes les features d'une équipe sur ses 5 derniers matchs."""
     data = _get(f"{BASE_URL}/team/{team_id}/events/last/0")
-    if not data:
-        return {"avg_scored": 1.2, "avg_conceded": 1.2}
+    events = (data.get("events", []) if data else [])[:FORM_WINDOW]
 
-    events = data.get("events", [])[:n]
     if not events:
-        return {"avg_scored": 1.2, "avg_conceded": 1.2}
+        return {
+            "avg_scored": 1.2, "avg_conceded": 1.2,
+            "form_pts": 4.5,   "win_rate": 0.4,
+            "btts_rate": 0.45, "over25_rate": 0.50,
+            "days_since_last": 7,
+        }
 
-    scored, conceded = [], []
+    scored, conceded, pts, btts_l, over25_l, dates = [], [], [], [], [], []
     for ev in events:
         ht_id = ev.get("homeTeam", {}).get("id")
-        hs = ev.get("homeScore", {}).get("current", 0)
-        aws = ev.get("awayScore", {}).get("current", 0)
-        if ht_id == team_id:
-            scored.append(hs); conceded.append(aws)
-        else:
-            scored.append(aws); conceded.append(hs)
+        hs  = ev.get("homeScore", {}).get("current", 0) or 0
+        aws = ev.get("awayScore", {}).get("current", 0) or 0
+        ts  = ev.get("startTimestamp", 0)
+        gf, ga = (hs, aws) if ht_id == team_id else (aws, hs)
+        scored.append(gf); conceded.append(ga)
+        btts_l.append(1 if gf > 0 and ga > 0 else 0)
+        over25_l.append(1 if gf + ga > 2.5 else 0)
+        dates.append(ts)
+        pts.append(3 if gf > ga else (1 if gf == ga else 0))
+
+    n = len(scored)
+    now_ts = int(datetime.datetime.now(datetime.UTC).timestamp())
+    days_since = min((now_ts - max(dates)) // 86400, 60) if dates else 7
 
     return {
-        "avg_scored":   round(sum(scored)   / len(scored),   2),
-        "avg_conceded": round(sum(conceded) / len(conceded), 2),
+        "avg_scored":    round(sum(scored)    / n, 2),
+        "avg_conceded":  round(sum(conceded)  / n, 2),
+        "form_pts":      round(sum(pts)       / n, 2),
+        "win_rate":      round(sum(1 for p in pts if p == 3) / n, 2),
+        "btts_rate":     round(sum(btts_l)    / n, 2),
+        "over25_rate":   round(sum(over25_l)  / n, 2),
+        "days_since_last": int(days_since),
+    }
+
+
+def _get_h2h_features(home_id: int, away_id: int) -> dict:
+    """Calcule les features H2H entre deux équipes."""
+    data = _get(f"{BASE_URL}/event/0/h2h?homeTeamId={home_id}&awayTeamId={away_id}")
+    default = {"h2h_over25_rate": 0.50, "h2h_btts_rate": 0.45}
+    if not data:
+        return default
+
+    events = [
+        e for e in data.get("teamDuel", {}).get("events", [])
+        if e.get("status", {}).get("type") == "finished"
+    ][:5]
+    if not events:
+        return default
+
+    over25 = [1 if (e.get("homeScore",{}).get("current",0) or 0) +
+                   (e.get("awayScore",{}).get("current",0) or 0) > 2.5 else 0 for e in events]
+    btts   = [1 if (e.get("homeScore",{}).get("current",0) or 0) > 0 and
+                   (e.get("awayScore",{}).get("current",0) or 0) > 0 else 0 for e in events]
+    return {
+        "h2h_over25_rate": round(sum(over25) / len(over25), 2),
+        "h2h_btts_rate":   round(sum(btts)   / len(btts),   2),
     }
 
 
 def compute_features(match: dict) -> dict:
-    home_stats = _get_team_last_n_goals(match["home_team_id"])
-    away_stats = _get_team_last_n_goals(match["away_team_id"])
-    home_exp = home_stats["avg_scored"]
-    away_exp = away_stats["avg_scored"]
+    hf  = _get_team_features(match["home_team_id"])
+    af  = _get_team_features(match["away_team_id"])
+    h2h = _get_h2h_features(match["home_team_id"], match["away_team_id"])
+    time.sleep(0.2)
 
-    # Country_encoded gardé pour compatibilité avec les anciens modèles
     from predictor import COUNTRY_ENCODING
-    country_enc = COUNTRY_ENCODING.get(match["league"], 0)
+    is_neutral = 1 if match["league"] == "Club Friendlies" else 0
 
     return {
-        "home_goals_exp":  home_exp,
-        "away_goals_exp":  away_exp,
-        "diff_goals_exp":  round(home_exp - away_exp, 2),
-        "total_goals_exp": round(home_exp + away_exp, 2),
-        "Country_encoded": country_enc,  # legacy
+        # Features de base
+        "home_goals_exp":    hf["avg_scored"],
+        "away_goals_exp":    af["avg_scored"],
+        "diff_goals_exp":    round(hf["avg_scored"] - af["avg_scored"], 2),
+        "total_goals_exp":   round(hf["avg_scored"] + af["avg_scored"], 2),
+        # Features enrichies
+        "home_conceded_exp": hf["avg_conceded"],
+        "away_conceded_exp": af["avg_conceded"],
+        "home_form_pts":     hf["form_pts"],
+        "away_form_pts":     af["form_pts"],
+        "home_win_rate":     hf["win_rate"],
+        "away_win_rate":     af["win_rate"],
+        "home_btts_rate":    hf["btts_rate"],
+        "away_btts_rate":    af["btts_rate"],
+        "home_over25_rate":  hf["over25_rate"],
+        "away_over25_rate":  af["over25_rate"],
+        "days_since_last_h": hf["days_since_last"],
+        "days_since_last_a": af["days_since_last"],
+        "h2h_over25_rate":   h2h["h2h_over25_rate"],
+        "h2h_btts_rate":     h2h["h2h_btts_rate"],
+        "is_neutral_ground": is_neutral,
+        # Legacy (anciens modèles)
+        "Country_encoded":   COUNTRY_ENCODING.get(match["league"], 0),
     }
 
 
