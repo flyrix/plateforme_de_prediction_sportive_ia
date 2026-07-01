@@ -61,7 +61,17 @@ FEATURE_COLUMNS = [
     "away_goals_exp",
     "diff_goals_exp",
     "total_goals_exp",
+    "Country_encoded",
 ]
+
+# Encodage des pays (doit correspondre au LabelEncoder utilisé à l'entraînement)
+COUNTRY_ENCODING = {
+    "Veikkausliiga":   0,
+    "Eliteserien":     1,
+    "MLS":             2,
+    "Serie A Brasil":  3,
+    "Club Friendlies": 4,
+}
 
 
 def _features_to_df(features: dict) -> pd.DataFrame:
@@ -76,10 +86,11 @@ def _features_to_df(features: dict) -> pd.DataFrame:
 def predict_match(features: dict) -> dict:
     """
     Retourne les probabilités brutes pour tous les marchés.
-    Chaque modèle expose predict_proba ; on prend la classe positive (index 1).
+    - model_winner : XGBClassifier 3 classes (0=1X, 1=X2, 2=2)
+    - model_goals  : XGBRegressor  -> prédit le nombre de buts total
+    - model_btts   : XGBClassifier binaire (0=non, 1=oui)
     """
     if not _MODELS_LOADED:
-        # Mode démo : probabilités fixes pour tester le frontend sans modèles
         import random
         print("[predictor] ⚠️  predict_match() appelé en MODE DÉMO — résultats non fiables.")
         return {
@@ -91,13 +102,19 @@ def predict_match(features: dict) -> dict:
 
     X = _features_to_df(features)
 
-    # Double Chance : le modèle prédit 1X (classe 0) et X2 (classe 1)
+    # Double Chance : classe 0 = 1X, classe 1 = X2
     dc_proba = MODEL_DC.predict_proba(X)[0]
+
+    # Over 2.5 : régresseur -> prédit buts totaux, on convertit en probabilité
+    # On utilise une sigmoïde centrée sur 2.5 pour obtenir une proba [0,1]
+    import math
+    goals_pred = float(MODEL_OVER.predict(X)[0])
+    over25_proba = round(1 / (1 + math.exp(-(goals_pred - 2.5))), 4)
 
     return {
         "Double Chance 1X": round(float(dc_proba[0]), 4),
         "Double Chance X2": round(float(dc_proba[1]), 4),
-        "Over 2.5":         round(float(MODEL_OVER.predict_proba(X)[0][1]), 4),
+        "Over 2.5":         over25_proba,
         "BTTS":             round(float(MODEL_BTTS.predict_proba(X)[0][1]), 4),
     }
 
