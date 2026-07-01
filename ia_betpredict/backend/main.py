@@ -8,10 +8,12 @@ import os
 import sys
 import datetime
 
-# Vercel exécute ce fichier depuis la racine du projet.
+# Vercel et Render exécutent ce fichier depuis la racine du projet.
 # On ajoute le dossier backend/ au path pour que les imports
 # relatifs (scraper, predictor, db) fonctionnent correctement.
-sys.path.insert(0, os.path.dirname(__file__))
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
 
 from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
