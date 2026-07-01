@@ -41,6 +41,9 @@ LEAGUE_GROUPS = {
 
 # Nombre de saisons historiques à collecter par ligue
 N_SEASONS = 5
+# Nombre max de pages par saison (1 page = ~10 matchs)
+MAX_PAGES_DEFAULT  = 50   # ~500 matchs par saison pour les ligues normales
+MAX_PAGES_FRIENDLY = 15   # ~150 matchs suffisent pour les amicaux
 # Nombre de matchs récents pour calculer la forme
 FORM_WINDOW = 5
 
@@ -81,11 +84,12 @@ def get_seasons(tournament_id: int, n: int = N_SEASONS) -> list[dict]:
 # Matchs d'une saison (avec pagination)
 # ---------------------------------------------------------------------------
 
-def get_season_events(tournament_id: int, season_id: int) -> list[dict]:
-    """Récupère tous les matchs terminés d'une saison via pagination."""
+def get_season_events(tournament_id: int, season_id: int, league_name: str = "") -> list[dict]:
+    """Récupère les matchs terminés d'une saison via pagination."""
+    max_pages = MAX_PAGES_FRIENDLY if league_name == "Club Friendlies" else MAX_PAGES_DEFAULT
     all_events = []
     page = 0
-    while True:
+    while page < max_pages:
         data = _get(
             f"{BASE_URL}/unique-tournament/{tournament_id}"
             f"/season/{season_id}/events/last/{page}"
@@ -95,7 +99,6 @@ def get_season_events(tournament_id: int, season_id: int) -> list[dict]:
         events = data.get("events", [])
         if not events:
             break
-        # Garder uniquement les matchs terminés avec score
         finished = [
             e for e in events
             if e.get("status", {}).get("type") == "finished"
@@ -103,11 +106,10 @@ def get_season_events(tournament_id: int, season_id: int) -> list[dict]:
             and e.get("awayScore", {}).get("current") is not None
         ]
         all_events.extend(finished)
-        # Sofascore retourne 10 par page, s'arrêter si moins de 10
         if len(events) < 10:
             break
         page += 1
-        time.sleep(0.3)
+        time.sleep(0.2)
     return all_events
 
 
@@ -209,7 +211,7 @@ def collect():
                 sname = season["name"]
                 print(f"  → Saison {sname} (id={sid})...", end=" ", flush=True)
 
-                events = get_season_events(tid, sid)
+                events = get_season_events(tid, sid, league_name)
                 print(f"{len(events)} matchs terminés", end=" ", flush=True)
 
                 rows_added = 0
