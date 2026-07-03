@@ -1,0 +1,44 @@
+nohup: les entrées sont ignorées
+
+==================================================
+[NORDIQUE] Veikkausliiga (ID=41)
+  5 saisons trouvées
+  → Veikkausliiga 2026... 82 matchs → 82 lignes
+  → Veikkausliiga 2025... 179 matchs → 179 lignes
+  → Veikkausliiga 2024... 169 matchs → 169 lignes
+  → Veikkausliiga 2023... 169 matchs → 169 lignes
+  → Veikkausliiga 2022... 171 matchs → 171 lignes
+
+==================================================
+[NORDIQUE] Eliteserien (ID=20)
+  5 saisons trouvées
+  → Eliteserien 2026... 89 matchs → 89 lignes
+  → Eliteserien 2025... 245 matchs → 245 lignes
+  → Eliteserien 2024... 245 matchs → 245 lignes
+  → Eliteserien 2023... 244 matchs   [HTTP] Erreur (3/3): HTTPSConnectionPool(host='api.sofascore.com', port=443): Read timed out. (read timeout=15)
+→ 244 lignes
+  → Eliteserien 2022... 245 matchs → 245 lignes
+
+==================================================
+[AMERICAIN] MLS (ID=242)
+  5 saisons trouvées
+  → MLS 2026...   [HTTP] Erreur (1/3): HTTPSConnectionPool(host='api.sofascore.com', port=443): Max retries exceeded with url: /api/v1/unique-tournament/242/season/86668/events/last/7 (Caused by ConnectTimeoutError(<HTTPSConnection(host='api.sofascore.com', port=443) at 0x7fee558c5d10>, 'Connection to api.sofascore.com timed out. (connect timeout=15)'))
+218 matchs → 218 lignes
+  → MLS 2025... 540 matchs → 540 lignes
+  → MLS 2024... 522 matchs → 522 lignes
+  → Major League Soccer 2023... 521 matchs → 521 lignes
+  → Major League Soccer 2022... 489 matchs → 489 lignes
+
+==================================================
+[SUD_AMERICAIN] Serie A Brasil (ID=325)
+  5 saisons trouvées
+  → Brasileiro Serie A 2026... 177 matchs → 177 lignes
+  → Brasileiro Serie A 2025... 380 matchs → 380 lignes
+  → Brasileirão Betano 2024... 380 matchs → 380 lignes
+  → Brasileirão Série A 2023... 380 matchs → 380 lignes
+  → Brasileirão Série A 2022... 380 matchs → 380 lignes
+
+==================================================
+[AMICAUX] Club Friendlies (ID=853)
+  5 saisons trouvées
+  → Club Friendly Games 2026... 392 matchs 
