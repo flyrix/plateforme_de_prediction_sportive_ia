@@ -43,7 +43,13 @@ def _load(filename: str):
     path = os.path.normpath(os.path.join(_MODELS_DIR, filename))
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    return joblib.load(path)
+    try:
+        return joblib.load(path)
+    except ModuleNotFoundError as exc:
+        # joblib peut déclencher cette erreur si xgboost n'est pas installé
+        if exc.name == "xgboost":
+            raise
+        raise
 
 def _load_group(group: str) -> dict | None:
     """Charge les 3 modèles spécialisés pour un groupe. Retourne None si absents."""
@@ -53,7 +59,7 @@ def _load_group(group: str) -> dict | None:
             "over": _load(f"model_goals_{group}.pkl"),
             "btts": _load(f"model_btts_{group}.pkl"),
         }
-    except FileNotFoundError:
+    except (FileNotFoundError, ModuleNotFoundError):
         return None
 
 # Modèles globaux (fallback)
@@ -68,6 +74,11 @@ try:
 except FileNotFoundError as _e:
     print(f"[predictor] ⚠️  Modèles introuvables : {_e}")
     print("[predictor] ⚠️  MODE DÉMO activé.")
+    _GLOBAL = None
+    _MODELS_LOADED = False
+except ModuleNotFoundError as _e:
+    print(f"[predictor] ⚠️  Dépendance manquante : {_e.name}")
+    print("[predictor] ⚠️  MODE DÉMO activé en attendant l'installation de xgboost.")
     _GLOBAL = None
     _MODELS_LOADED = False
 
@@ -119,6 +130,15 @@ def _features_to_df(features: dict, legacy: bool = False) -> pd.DataFrame:
 # Génération des coupons
 # ---------------------------------------------------------------------------
 
+def _predict_proba_dict(model, X):
+    """Retourne un dict classe -> probabilité pour un modèle binaire."""
+    probs = model.predict_proba(X)[0]
+    classes = list(model.classes_)
+    if len(classes) != len(probs):
+        raise ValueError("Incohérence entre classes et probabilités du modèle")
+    return {classes[i]: float(probs[i]) for i in range(len(classes))}
+
+
 def predict_match(features: dict, league: str = "") -> dict:
     """
     Utilise le modèle spécialisé pour la ligue si disponible,
@@ -142,6 +162,9 @@ def predict_match(features: dict, league: str = "") -> dict:
         or _GLOBAL
     )
 
+    if models is None:
+        raise RuntimeError(f"Aucun modèle disponible pour la ligue '{league}'")
+
     # Déterminer si on utilise les features legacy (avec Country_encoded)
     is_legacy = (models is _GLOBAL)
     X = _features_to_df(features, legacy=is_legacy)
@@ -149,8 +172,12 @@ def predict_match(features: dict, league: str = "") -> dict:
     source = f"spécialisé '{group}'" if not is_legacy else "global (legacy)"
     print(f"[predictor] Modèle utilisé : {source} pour {league}")
 
-    dc_proba   = models["dc"].predict_proba(X)[0]
-    btts_proba = models["btts"].predict_proba(X)[0][1]
+    dc_probs = _predict_proba_dict(models["dc"], X)
+    prob_1x = dc_probs.get(1, dc_probs.get("1", 0.0))
+    prob_x2 = dc_probs.get(0, dc_probs.get("0", 0.0))
+
+    btts_probs = _predict_proba_dict(models["btts"], X)
+    btts_proba = btts_probs.get(1, btts_probs.get("1", 0.0))
 
     # Over 2.5 : classifieur si nouveau modèle, régresseur si legacy
     if hasattr(models["over"], "predict_proba"):
@@ -161,8 +188,8 @@ def predict_match(features: dict, league: str = "") -> dict:
         over_proba = round(1 / (1 + math.exp(-(goals_pred - 2.5))), 4)
 
     return {
-        "Double Chance 1X": round(float(dc_proba[0]), 4),
-        "Double Chance X2": round(float(dc_proba[1]), 4),
+        "Double Chance 1X": round(float(prob_1x), 4),
+        "Double Chance X2": round(float(prob_x2), 4),
         "Over 2.5":         round(float(over_proba), 4),
         "BTTS":             round(float(btts_proba), 4),
     }
