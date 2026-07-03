@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: ia-betpredict-api
+    name: plateforme_de_prediction_sportive_ia
     runtime: docker
     dockerfilePath: ./Dockerfile
     envVars:
