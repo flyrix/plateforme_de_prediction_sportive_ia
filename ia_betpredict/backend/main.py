@@ -39,7 +39,7 @@ print(f"[main] CORS origins: {_CORS_ORIGINS}")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
-    allow_methods=["*"] if _CORS_ORIGINS != ["*"] else ["GET", "POST", "PATCH"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
