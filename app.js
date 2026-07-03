@@ -10,7 +10,8 @@
 // En production, définis window.ENV_API_BASE avant ce script :
 // <script>window.ENV_API_BASE = "https://ia-betpredict-api.onrender.com";</script>
 // En développement local : http://127.0.0.1:8000
-const API_BASE = window.ENV_API_BASE || "http://127.0.0.1:8000";
+const API_BASE = window.ENV_API_BASE || window.location.origin || "http://127.0.0.1:8000";
+console.log(`[app] API_BASE=${API_BASE}`);
 
 // Icônes des ligues
 const LEAGUE_FLAGS = {

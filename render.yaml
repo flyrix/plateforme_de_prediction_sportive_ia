@@ -1,14 +1,14 @@
 services:
   - type: web
     name: ia-betpredict-api
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn ia_betpredict.backend.main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: DATABASE_URL
         sync: false
       - key: CRON_SECRET
         sync: false
       - key: ALLOWED_ORIGINS
+        value: "*"
         sync: false
     autoDeploy: true
