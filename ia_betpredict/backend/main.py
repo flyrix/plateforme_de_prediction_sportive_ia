@@ -30,12 +30,16 @@ app = FastAPI(
 
 # Restreindre les origines CORS en production via la variable ALLOWED_ORIGINS
 # Ex : ALLOWED_ORIGINS="https://ia-betpredict.vercel.app"
-_CORS_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+_allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*")
+_CORS_ORIGINS = [origin.strip() for origin in _allowed_origins.split(",") if origin.strip()]
+if not _CORS_ORIGINS:
+    _CORS_ORIGINS = ["*"]
+print(f"[main] CORS origins: {_CORS_ORIGINS}")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
-    allow_methods=["GET", "POST", "PATCH"],
+    allow_methods=["*"] if _CORS_ORIGINS != ["*"] else ["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
 
