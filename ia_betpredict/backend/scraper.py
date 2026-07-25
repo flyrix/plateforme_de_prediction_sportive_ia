@@ -82,22 +82,38 @@ def _get_proxy() -> dict[str, str] | None:
 # Helpers HTTP
 # ---------------------------------------------------------------------------
 
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
+
 def _get(url: str, retries: int = 3) -> dict | None:
+    # Si une clé ScraperAPI est configurée, on passe par leur proxy anti-bot
+    if SCRAPER_API_KEY:
+        payload = {
+            'api_key': SCRAPER_API_KEY,
+            'url': url,
+            'render': 'false'  # Pas besoin de JS pour les endpoints JSON
+        }
+        for attempt in range(retries):
+            try:
+                resp = SESSION.get('https://api.scraperapi.com', params=payload, timeout=20)
+                if resp.status_code == 200:
+                    return resp.json()
+            except Exception as exc:
+                print(f"[scraper] Erreur ScraperAPI ({attempt+1}/{retries}) : {exc}")
+                time.sleep(2)
+        return None
+
+    # Fallback standard si pas de clé API
     for attempt in range(retries):
         try:
-            proxies = _get_proxy()
-            resp = SESSION.get(url, headers=HEADERS, timeout=10, proxies=proxies)
+            resp = SESSION.get(url, headers=HEADERS, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
-            if resp.status_code == 429:
-                time.sleep(3 * (attempt + 1))
             elif resp.status_code == 403:
                 print(f"[scraper] 403 Forbidden pour {url}")
         except Exception as exc:
             print(f"[scraper] Erreur réseau ({attempt+1}/{retries}) : {exc}")
             time.sleep(2)
     return None
-
 # ---------------------------------------------------------------------------
 # Récupération des matchs du jour (Endpoint Global)
 # ---------------------------------------------------------------------------
