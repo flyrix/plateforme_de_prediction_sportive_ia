@@ -1,7 +1,7 @@
 """
 predictor.py
 ------------
-Charge les 4 modèles XGBoost (.pkl) et expose une fonction unique
+Charge les modèles XGBoost (.pkl) et expose une fonction unique
 generate_coupons(match) qui retourne les paris éligibles selon les
 seuils de confiance définis dans le cahier des charges.
 """
@@ -46,7 +46,6 @@ def _load(filename: str):
     try:
         return joblib.load(path)
     except ModuleNotFoundError as exc:
-        # joblib peut déclencher cette erreur si xgboost n'est pas installé
         if exc.name == "xgboost":
             raise
         raise
@@ -62,33 +61,24 @@ def _load_group(group: str) -> dict | None:
     except (FileNotFoundError, ModuleNotFoundError):
         return None
 
-# Modèles globaux (fallback)
-try:
-    _GLOBAL = {
-        "dc":   _load("model_winner.pkl"),
-        "over": _load("model_goals.pkl"),
-        "btts": _load("model_btts.pkl"),
-    }
-    _MODELS_LOADED = True
-    print("[predictor] ✅ Modèles globaux chargés.")
-except FileNotFoundError as _e:
-    print(f"[predictor] ⚠️  Modèles introuvables : {_e}")
-    print("[predictor] ⚠️  MODE DÉMO activé.")
-    _GLOBAL = None
-    _MODELS_LOADED = False
-except ModuleNotFoundError as _e:
-    print(f"[predictor] ⚠️  Dépendance manquante : {_e.name}")
-    print("[predictor] ⚠️  MODE DÉMO activé en attendant l'installation de xgboost.")
-    _GLOBAL = None
-    _MODELS_LOADED = False
-
-# Modèles spécialisés (optionnels, prioritaires si présents)
+# Chargement de tous les groupes spécialisés (y compris 'global')
 _SPECIALIZED: dict[str, dict] = {}
+
 for _g in ["nordique", "americain", "sud_americain", "amicaux", "global"]:
     _m = _load_group(_g)
     if _m:
         _SPECIALIZED[_g] = _m
         print(f"[predictor] ✅ Modèle spécialisé '{_g}' chargé.")
+
+# Validation de la présence des modèles
+if "global" in _SPECIALIZED or len(_SPECIALIZED) > 0:
+    _MODELS_LOADED = True
+    _GLOBAL = _SPECIALIZED.get("global")  # Utilise 'global' comme fallback
+else:
+    print("[predictor] ⚠️ Aucun modèle trouvé dans le dossier /models/.")
+    print("[predictor] ⚠️ MODE DÉMO activé.")
+    _GLOBAL = None
+    _MODELS_LOADED = False
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +98,7 @@ FEATURE_COLUMNS = [
     "is_neutral_ground",
 ]
 
-# Country_encoded gardé pour compatibilité avec les anciens modèles globaux
+# Encodage si besoin de compatibilité
 COUNTRY_ENCODING = {
     "Veikkausliiga":   0,
     "Eliteserien":     1,
@@ -142,11 +132,11 @@ def _predict_proba_dict(model, X):
 def predict_match(features: dict, league: str = "") -> dict:
     """
     Utilise le modèle spécialisé pour la ligue si disponible,
-    sinon le modèle global (legacy avec Country_encoded).
+    sinon le modèle 'global' spécialisé.
     """
     if not _MODELS_LOADED and not _SPECIALIZED:
         import random
-        print("[predictor] ⚠️  MODE DÉMO")
+        print("[predictor] ⚠️ MODE DÉMO")
         return {
             "Double Chance 1X": round(random.uniform(0.50, 0.90), 4),
             "Double Chance X2": round(random.uniform(0.50, 0.90), 4),
@@ -154,7 +144,7 @@ def predict_match(features: dict, league: str = "") -> dict:
             "BTTS":             round(random.uniform(0.45, 0.85), 4),
         }
 
-    # Choisir le bon modèle : spécialisé > global spécialisé > legacy
+    # Sélection du modèle : spécialisé > global
     group = LEAGUE_TO_GROUP.get(league, "")
     models = (
         _SPECIALIZED.get(group)
@@ -165,11 +155,9 @@ def predict_match(features: dict, league: str = "") -> dict:
     if models is None:
         raise RuntimeError(f"Aucun modèle disponible pour la ligue '{league}'")
 
-    # Déterminer si on utilise les features legacy (avec Country_encoded)
-    is_legacy = (models is _GLOBAL)
-    X = _features_to_df(features, legacy=is_legacy)
+    X = _features_to_df(features, legacy=False)
 
-    source = f"spécialisé '{group}'" if not is_legacy else "global (legacy)"
+    source = f"spécialisé '{group}'" if group in _SPECIALIZED else "global"
     print(f"[predictor] Modèle utilisé : {source} pour {league}")
 
     dc_probs = _predict_proba_dict(models["dc"], X)
@@ -179,7 +167,7 @@ def predict_match(features: dict, league: str = "") -> dict:
     btts_probs = _predict_proba_dict(models["btts"], X)
     btts_proba = btts_probs.get(1, btts_probs.get("1", 0.0))
 
-    # Over 2.5 : classifieur si nouveau modèle, régresseur si legacy
+    # Over 2.5 : classifieur si présent, sinon régresseur
     if hasattr(models["over"], "predict_proba"):
         over_proba = models["over"].predict_proba(X)[0][1]
     else:
@@ -199,13 +187,6 @@ def generate_coupons(match: dict) -> list[dict]:
     """
     Applique les seuils métier et retourne uniquement les paris
     dont la confiance dépasse le seuil requis.
-
-    Retourne une liste de dicts prêts à être insérés dans Supabase :
-    {
-        match_name, league, prediction_type,
-        confidence_rate, status,
-        home_team, away_team, match_time
-    }
     """
     features   = match.get("features", {})
     probas     = predict_match(features, league=match.get("league", ""))
