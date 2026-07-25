@@ -54,10 +54,18 @@ async function loadCoupons() {
   showState("loading");
 
   try {
-    const res = await fetch(`${API_BASE}/coupons`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    allCoupons = data.coupons || [];
+    // 1. Fetch daily scheduled coupons from DB
+    const dailyRes = await fetch(`${API_BASE}/coupons`);
+    if (!dailyRes.ok) throw new Error(`HTTP ${dailyRes.status}`);
+    const dailyData = await dailyRes.json();
+    
+    // 2. Fetch live match predictions from ML models
+    const liveRes = await fetch(`${API_BASE}/predictions/live`);
+    const liveData = liveRes.ok ? await liveRes.json() : { coupons: [] };
+
+    // 3. Merge daily and live coupons into one array
+    allCoupons = [...dailyData.coupons, ...liveData.coupons] || [];
+    
     renderCoupons();
     updateStats();
   } catch (err) {
@@ -65,6 +73,7 @@ async function loadCoupons() {
     showState("error", `Impossible de joindre l'API. (${err.message})`);
   }
 }
+
 
 // ── Render ────────────────────────────────────────────────
 function renderCoupons() {
@@ -98,6 +107,10 @@ function couponCard(c) {
   const barClass  = isHigh ? ""          : "mid";
   const flag      = LEAGUE_FLAGS[c.league] || "⚽";
 
+  // Check if the match status indicates it's currently live
+  const isLive = c.status && typeof c.status === 'object' && c.status.type !== 'finished';
+  const liveBadge = isLive ? '<span class="live-badge">🔴 LIVE</span>' : '';
+
   const statusClass = {
     "En attente": "attente",
     "Gagné":      "gagne",
@@ -108,9 +121,9 @@ function couponCard(c) {
   <div class="coupon-card ${tierClass}">
     <div class="coupon-header">
       <span class="league-badge">${flag} ${c.league}</span>
-      <span class="match-time">${c.match_time || "--:--"}</span>
+      <span class="match-time">${liveBadge || c.match_time || "--:--"}</span>
     </div>
-
+  
     <div class="teams-row">
       <span class="team-name home">${c.home_team}</span>
       <span class="vs-label">VS</span>

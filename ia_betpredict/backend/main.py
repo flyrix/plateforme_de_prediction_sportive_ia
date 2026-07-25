@@ -8,6 +8,28 @@ import os
 import sys
 import datetime
 
+@app.get("/predictions/live", tags=["Predictions"])
+async def get_live_predictions():
+    """Récupère les matchs live, calcule les features et retourne les prédictions."""
+    try:
+        from scraper import fetch_inplay_matches, compute_features
+        from predictor import generate_coupons
+        
+        matches = fetch_inplay_matches()
+        all_coupons = []
+        
+        for match in matches:
+            # 1. Compute features dynamically for the live match
+            match["features"] = compute_features(match)
+            # 2. Generate prediction coupons using your trained .pkl models
+            coupons = generate_coupons(match)
+            all_coupons.extend(coupons)
+            
+        return {"date": datetime.date.today().isoformat(), "count": len(all_coupons), "coupons": all_coupons}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erreur prédiction live : {exc}")
+
+
 # Vercel et Render exécutent ce fichier depuis la racine du projet.
 # On ajoute le dossier backend/ au path pour que les imports
 # relatifs (scraper, predictor, db) fonctionnent correctement.
@@ -21,6 +43,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from scraper import fetch_matches_with_features
 from predictor import generate_coupons
 from db import execute
+from scraper import fetch_all_matches
+
+# Matches endpoints (today / inplay)
 
 app = FastAPI(
     title="IA-BetPredict API",
@@ -202,3 +227,29 @@ def _fetch_coupons(match_date: str, league: str | None, min_confidence: float) -
         return {"date": match_date, "count": len(rows), "coupons": rows}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erreur Neon : {exc}")
+
+
+@app.get("/matches/today", tags=["Matches"])
+async def get_todays_matches():
+    """Retourne les matchs programmés pour aujourd'hui (date locale UTC)."""
+    today = datetime.date.today().isoformat()
+    try:
+        matches = fetch_all_matches(today)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erreur scraping : {exc}")
+    return {"date": today, "count": len(matches), "matches": matches}
+
+
+@app.get("/matches/inplay", tags=["Matches"])
+async def get_inplay_matches():
+    """Retourne les matchs actuellement en cours détectés via le scraper.
+
+    Note: la détection dépend de la disponibilité des endpoints Sofascore.
+    """
+    try:
+        # Import here to avoid circular issues in some environments
+        from scraper import fetch_inplay_matches
+        matches = fetch_inplay_matches()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erreur inplay scraping : {exc}")
+    return {"date": datetime.date.today().isoformat(), "count": len(matches), "matches": matches}

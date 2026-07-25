@@ -420,4 +420,18 @@ nohup: les entrées sont ignorées
   [HTTP] 403 Bloqué — pause 60s
   [HTTP] 403 Bloqué — pause 60s
 0 matchs → 0 lignes
-  → Club Friendly Games 2024... 
+  → Club Friendly Games 2024...   [HTTP] 403 Bloqué — pause 60s
+  [HTTP] 403 Bloqué — pause 60s
+  [HTTP] 403 Bloqué — pause 60s
+0 matchs → 0 lignes
+  → Club Friendly Games 2023...   [HTTP] 403 Bloqué — pause 60s
+  [HTTP] 403 Bloqué — pause 60s
+  [HTTP] 403 Bloqué — pause 60s
+0 matchs → 0 lignes
+  → Club Friendly Games 2022...   [HTTP] 403 Bloqué — pause 60s
+  [HTTP] 403 Bloqué — pause 60s
+  [HTTP] 403 Bloqué — pause 60s
+0 matchs → 0 lignes
+
+✅ Dataset sauvegardé : /run/media/kacou/Stockage/plateforme_de_prediction_sportive_ia/ia_betpredict/backend/../../data/training_data.csv
+   6217 matchs | {'americain': 2290, 'nordique': 1838, 'sud_americain': 1697, 'amicaux': 392}
