@@ -2,19 +2,14 @@
 scraper.py
 ----------
 Récupère les matchs du jour sur les ligues cibles et les tournois live Sofascore via l'API interne de Sofascore.
-Endpoint utilisé : /unique-tournament/{id}/season/{season_id}/events/next/0
-La saison active est récupérée dynamiquement au démarrage.
+Utilise l'endpoint global `/scheduled-events/{date}` beaucoup plus robuste contre les blocages Cloudflare/Render.
 """
 
 import datetime
 import time
 import os
-import re
-import json
-import random
 import itertools
-from urllib.parse import quote_plus
-from curl_cffi import requests  # Utilisation de curl_cffi pour usurper l'empreinte TLS Chrome
+from curl_cffi import requests
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -27,7 +22,7 @@ HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Referer": "https://www.sofascore.com/",
-    "Accept": "application/json, text/plain, */*",
+    "Accept": "*/*",
     "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
     "Origin": "https://www.sofascore.com",
     "X-Requested-With": "XMLHttpRequest",
@@ -35,33 +30,24 @@ HEADERS = {
 
 BASE_URL = "https://api.sofascore.com/api/v1"
 
-LEAGUE_IDS = {
-    # Core leagues (corrected IDs)
-    "Veikkausliiga":       41,     # Finlande
-    "Eliteserien":         20,     # Norvège
-    "MLS":                 242,    # États-Unis
-    "Serie A Brasil":      325,    # Brésil
-
-    # US / additional competitions (added)
-    "USL Championship":    13363,  # USA
-    "USL League One":      13362,  # USA
-    "USL League Two":      13546,  # USA
-    "NPSL":                13450,  # USA (regional amateur league)
-    "NPSL Founders Cup":   13742,  # USA (Founders Cup)
-
-    # Friendlies / wide coverage
-    "Club Friendlies":     853,    # Matchs amicaux de clubs (mondial)
-    "Women Club Friendlies": 24932, # Matchs amicaux féminins (mondial)
+# Mapping des IDs de tournois vers nos nom de ligues
+TOURNAMENT_TO_LEAGUE = {
+    41:    "Veikkausliiga",
+    20:    "Eliteserien",
+    242:   "MLS",
+    325:   "Serie A Brasil",
+    13363: "USL Championship",
+    13362: "USL League One",
+    13546: "USL League Two",
+    13450: "NPSL",
+    13742: "NPSL Founders Cup",
+    853:   "Club Friendlies",
+    24932: "Women Club Friendlies",
 }
 
 FORM_WINDOW = 5
 
-# Optional manual override: set known season ids to avoid relying on Sofascore API
-SEASON_OVERRIDES: dict[int, int] = {
-    # tournament_id: season_id,
-    # e.g. 13363: 2026
-}
-
+# Gestion des proxies optionnels
 SOFASCORE_PROXIES = os.getenv("SOFASCORE_PROXIES", "").strip()
 SOFASCORE_PROXY_FILE = os.getenv("SOFASCORE_PROXY_FILE", "").strip()
 
@@ -77,31 +63,20 @@ def _load_proxies() -> list[str]:
                     if line.strip() and not line.strip().startswith("#")
                 ])
         except FileNotFoundError:
-            print(f"[scraper] Proxy file introuvable : {SOFASCORE_PROXY_FILE}")
+            pass
     return proxies
 
 PROXY_URLS = _load_proxies()
 PROXY_CYCLE = itertools.cycle(PROXY_URLS) if PROXY_URLS else None
-if PROXY_URLS:
-    print(f"[scraper] Chargé {len(PROXY_URLS)} proxy(s) pour Sofascore")
 
-# Session curl_cffi simulant un navigateur Chrome récent
 SESSION = requests.Session(impersonate="chrome120")
 SESSION.trust_env = False
-
-
-def _build_proxy(proxy_url: str) -> dict[str, str] | None:
-    if not proxy_url:
-        return None
-    return {"http": proxy_url, "https": proxy_url}
-
 
 def _get_proxy() -> dict[str, str] | None:
     if not PROXY_CYCLE:
         return None
     proxy_url = next(PROXY_CYCLE)
-    return _build_proxy(proxy_url)
-
+    return {"http": proxy_url, "https": proxy_url}
 
 # ---------------------------------------------------------------------------
 # Helpers HTTP
@@ -111,219 +86,80 @@ def _get(url: str, retries: int = 3) -> dict | None:
     for attempt in range(retries):
         try:
             proxies = _get_proxy()
-            if proxies:
-                print(f"[scraper] Requête via proxy {proxies['https']}")
             resp = SESSION.get(url, headers=HEADERS, timeout=10, proxies=proxies)
             if resp.status_code == 200:
                 return resp.json()
             if resp.status_code == 429:
-                time.sleep(5 * (attempt + 1))
+                time.sleep(3 * (attempt + 1))
             elif resp.status_code == 403:
-                print(f"[scraper] 403 Forbidden pour {url} (proxy={proxies})")
+                print(f"[scraper] 403 Forbidden pour {url}")
         except Exception as exc:
             print(f"[scraper] Erreur réseau ({attempt+1}/{retries}) : {exc}")
             time.sleep(2)
     return None
 
-
-def _get_text(url: str, retries: int = 3) -> str | None:
-    for attempt in range(retries):
-        try:
-            proxies = _get_proxy()
-            if proxies:
-                print(f"[scraper] Requête texte via proxy {proxies['https']}")
-            resp = SESSION.get(url, headers=HEADERS, timeout=10, proxies=proxies)
-            if resp.status_code == 200:
-                return resp.text
-            if resp.status_code == 429:
-                time.sleep(5 * (attempt + 1))
-            elif resp.status_code == 403:
-                print(f"[scraper] 403 Forbidden pour {url} (proxy={proxies})")
-        except Exception as exc:
-            print(f"[scraper] Erreur réseau ({attempt+1}/{retries}) : {exc}")
-            time.sleep(2)
-    return None
-
-
 # ---------------------------------------------------------------------------
-# Saison active
+# Récupération des matchs du jour (Endpoint Global)
 # ---------------------------------------------------------------------------
-
-def _get_current_season_id(tournament_id: int) -> int | None:
-    """Retourne l'ID de la saison la plus récente pour un tournoi.
-
-    Checks `SEASON_OVERRIDES` first to allow manual injection of season ids.
-    """
-    if tournament_id in SEASON_OVERRIDES:
-        return SEASON_OVERRIDES[tournament_id]
-
-    data = _get(f"{BASE_URL}/unique-tournament/{tournament_id}/seasons")
-    if not data:
-        return None
-    seasons = data.get("seasons", [])
-    return seasons[0]["id"] if seasons else None
-
-
-def _extract_next_data_from_html(html: str) -> dict | None:
-    """Extract JSON from Next.js __NEXT_DATA__ script in Sofascore pages."""
-    m = re.search(r"<script id=\"__NEXT_DATA__\"[^>]*>(.*?)</script>", html, re.S)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(1))
-    except Exception:
-        return None
-
-
-def _find_season_id_in_json(obj: object, tournament_id: int) -> int | None:
-    """Recursively search JSON for a seasons list matching tournament_id."""
-    if isinstance(obj, dict):
-        if obj.get("id") == tournament_id and "seasons" in obj:
-            seasons = obj.get("seasons") or []
-            if seasons:
-                return seasons[0].get("id")
-        ut = obj.get("uniqueTournament")
-        if isinstance(ut, dict) and ut.get("id") == tournament_id:
-            seasons = ut.get("seasons") or []
-            if seasons:
-                return seasons[0].get("id")
-        for v in obj.values():
-            found = _find_season_id_in_json(v, tournament_id)
-            if found:
-                return found
-    elif isinstance(obj, list):
-        for item in obj:
-            found = _find_season_id_in_json(item, tournament_id)
-            if found:
-                return found
-    return None
-
-
-def _get_season_id_via_search(tournament_id: int, league_name: str | None = None) -> int | None:
-    """Fallback: query the public search page and parse embedded JSON to find seasons."""
-    query = league_name or str(tournament_id)
-    url = f"https://www.sofascore.com/search?query={quote_plus(query)}"
-    html = _get_text(url)
-    if not html:
-        return None
-    nd = _extract_next_data_from_html(html)
-    if not nd:
-        return None
-    season_id = _find_season_id_in_json(nd, tournament_id)
-    if season_id:
-        return season_id
-
-    def _find_urls(obj):
-        urls = []
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k == "url" and isinstance(v, str) and v.rstrip('/').endswith(f"/{tournament_id}"):
-                    urls.append(v)
-                else:
-                    urls.extend(_find_urls(v))
-        elif isinstance(obj, list):
-            for item in obj:
-                urls.extend(_find_urls(item))
-        return urls
-
-    urls = _find_urls(nd)
-    for u in urls:
-        turl = f"https://www.sofascore.com{u}"
-        html = _get_text(turl)
-        if not html:
-            continue
-        nd2 = _extract_next_data_from_html(html)
-        if not nd2:
-            continue
-        season_id = _find_season_id_in_json(nd2, tournament_id)
-        if season_id:
-            return season_id
-
-    base_slug = (league_name or str(tournament_id)).lower().replace(" ", "-")
-    candidates = [base_slug, f"{base_slug}", f"{base_slug.replace('usl-','usl-')}"]
-    for cand in candidates:
-        turl = f"https://www.sofascore.com/football/tournament/usa/{cand}"
-        html = _get_text(turl)
-        if not html:
-            continue
-        nd = _extract_next_data_from_html(html)
-        if not nd:
-            continue
-        season_id = _find_season_id_in_json(nd, tournament_id)
-        if season_id:
-            return season_id
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Récupération des matchs du jour
-# ---------------------------------------------------------------------------
-
-def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
-    season_id = _get_current_season_id(tournament_id)
-    if not season_id:
-        season_id = _get_season_id_via_search(tournament_id, league_name)
-    if not season_id:
-        print(f"[scraper] ⚠️  Saison introuvable pour {league_name}")
-        return []
-
-    data = _get(f"{BASE_URL}/unique-tournament/{tournament_id}/season/{season_id}/events/next/0")
-    if not data:
-        print(f"[scraper] ⚠️  Aucune réponse pour {league_name}")
-        return []
-
-    matches = []
-    for event in data.get("events", []):
-        ts = event.get("startTimestamp", 0)
-        event_date = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
-        if event_date != date_str:
-            continue
-        matches.append({
-            "league":       league_name,
-            "match_name":   f"{event['homeTeam']['name']} vs {event['awayTeam']['name']}",
-            "home_team_id": event["homeTeam"]["id"],
-            "away_team_id": event["awayTeam"]["id"],
-            "home_team":    event["homeTeam"]["name"],
-            "away_team":    event["awayTeam"]["name"],
-            "match_time":   datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%H:%M"),
-            "event_id":     event["id"],
-        })
-    return matches
-
 
 def fetch_all_matches(date_str: str | None = None) -> list[dict]:
     if date_str is None:
         date_str = datetime.date.today().isoformat()
 
-    print(f"[scraper] Récupération des matchs pour le {date_str}…")
-    all_matches = []
-    for league_name, tid in LEAGUE_IDS.items():
-        matches = fetch_matches_for_league(league_name, tid, date_str)
-        print(f"[scraper]   {league_name}: {len(matches)} match(s)")
-        all_matches.extend(matches)
-        time.sleep(0.5)
+    print(f"[scraper] Récupération des matchs pour le {date_str} via scheduled-events…")
+    
+    url = f"{BASE_URL}/scheduled-events/{date_str}"
+    data = _get(url)
 
-    print(f"[scraper] ✅ {len(all_matches)} match(s) total pour le {date_str}")
+    if not data or "events" not in data:
+        print(f"[scraper] ⚠️ Impossible de récupérer les événements pour {date_str}")
+        return []
+
+    all_matches = []
+    events = data.get("events", [])
+
+    for event in events:
+        ut = event.get("tournament", {}).get("uniqueTournament", {})
+        tid = ut.get("id")
+
+        # Vérifier si l'événement fait partie de nos ligues cibles
+        if tid in TOURNAMENT_TO_LEAGUE:
+            league_name = TOURNAMENT_TO_LEAGUE[tid]
+            ts = event.get("startTimestamp", 0)
+            
+            all_matches.append({
+                "league":       league_name,
+                "match_name":   f"{event['homeTeam']['name']} vs {event['awayTeam']['name']}",
+                "home_team_id": event["homeTeam"]["id"],
+                "away_team_id": event["awayTeam"]["id"],
+                "home_team":    event["homeTeam"]["name"],
+                "away_team":    event["awayTeam"]["name"],
+                "match_time":   datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%H:%M"),
+                "event_id":     event["id"],
+            })
+
+    print(f"[scraper] ✅ {len(all_matches)} match(s) ciblé(s) trouvé(s) sur {len(events)} évènements aujourd'hui.")
     return all_matches
 
 
 def fetch_inplay_matches() -> list[dict]:
-    """Tente de récupérer les matchs actuellement en cours (in-play)."""
-    all_matches = []
-    for league_name, tid in LEAGUE_IDS.items():
-        season_id = _get_current_season_id(tid)
-        if not season_id:
-            continue
-        data = _get(f"{BASE_URL}/unique-tournament/{tid}/season/{season_id}/events/next/0")
-        if not data:
-            continue
-        for event in data.get("events", []):
+    """Récupère les matchs en direct."""
+    date_str = datetime.date.today().isoformat()
+    data = _get(f"{BASE_URL}/scheduled-events/{date_str}")
+    if not data:
+        return []
+
+    inplay_matches = []
+    for event in data.get("events", []):
+        ut = event.get("tournament", {}).get("uniqueTournament", {})
+        tid = ut.get("id")
+        
+        if tid in TOURNAMENT_TO_LEAGUE:
             st = event.get("status", {}).get("type", "").lower()
-            if st and st not in ("finished", "canceled", "postponed"):
+            if st and st not in ("finished", "canceled", "postponed", "notstarted"):
                 ts = event.get("startTimestamp", 0)
-                all_matches.append({
-                    "league": league_name,
+                inplay_matches.append({
+                    "league": TOURNAMENT_TO_LEAGUE[tid],
                     "match_name": f"{event['homeTeam']['name']} vs {event['awayTeam']['name']}",
                     "home_team_id": event["homeTeam"]["id"],
                     "away_team_id": event["awayTeam"]["id"],
@@ -333,8 +169,7 @@ def fetch_inplay_matches() -> list[dict]:
                     "event_id": event.get("id"),
                     "status": event.get("status", {}),
                 })
-    return all_matches
-
+    return inplay_matches
 
 # ---------------------------------------------------------------------------
 # Calcul des features enrichies
@@ -415,12 +250,10 @@ def compute_features(match: dict) -> dict:
     is_neutral = 1 if match["league"] == "Club Friendlies" else 0
 
     return {
-        # Features de base
         "home_goals_exp":    hf["avg_scored"],
         "away_goals_exp":    af["avg_scored"],
         "diff_goals_exp":    round(hf["avg_scored"] - af["avg_scored"], 2),
         "total_goals_exp":   round(hf["avg_scored"] + af["avg_scored"], 2),
-        # Features enrichies
         "home_conceded_exp": hf["avg_conceded"],
         "away_conceded_exp": af["avg_conceded"],
         "home_form_pts":     hf["form_pts"],
@@ -436,7 +269,6 @@ def compute_features(match: dict) -> dict:
         "h2h_over25_rate":   h2h["h2h_over25_rate"],
         "h2h_btts_rate":     h2h["h2h_btts_rate"],
         "is_neutral_ground": is_neutral,
-        # Legacy (anciens modèles)
         "Country_encoded":   COUNTRY_ENCODING.get(match["league"], 0),
     }
 
