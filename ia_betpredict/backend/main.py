@@ -1,34 +1,12 @@
 """
 main.py
 -------
-Point d'entrée FastAPI optimisé pour Vercel Serverless.
+Point d'entrée FastAPI optimisé pour Vercel Serverless & Render.
 """
 
 import os
 import sys
 import datetime
-
-@app.get("/predictions/live", tags=["Predictions"])
-async def get_live_predictions():
-    """Récupère les matchs live, calcule les features et retourne les prédictions."""
-    try:
-        from scraper import fetch_inplay_matches, compute_features
-        from predictor import generate_coupons
-        
-        matches = fetch_inplay_matches()
-        all_coupons = []
-        
-        for match in matches:
-            # 1. Compute features dynamically for the live match
-            match["features"] = compute_features(match)
-            # 2. Generate prediction coupons using your trained .pkl models
-            coupons = generate_coupons(match)
-            all_coupons.extend(coupons)
-            
-        return {"date": datetime.date.today().isoformat(), "count": len(all_coupons), "coupons": all_coupons}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erreur prédiction live : {exc}")
-
 
 # Vercel et Render exécutent ce fichier depuis la racine du projet.
 # On ajoute le dossier backend/ au path pour que les imports
@@ -40,12 +18,15 @@ if _BACKEND_DIR not in sys.path:
 from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 
-from scraper import fetch_matches_with_features
+# Imports locaux
+from scraper import fetch_matches_with_features, fetch_all_matches, fetch_inplay_matches, compute_features
 from predictor import generate_coupons
 from db import execute
-from scraper import fetch_all_matches
 
-# Matches endpoints (today / inplay)
+
+# ---------------------------------------------------------------------------
+# Initialisation de l'application FastAPI
+# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="IA-BetPredict API",
@@ -69,12 +50,13 @@ app.add_middleware(
 )
 
 # Clé secrète pour protéger le endpoint /run-daily-job
-# Définis CRON_SECRET dans les variables d'environnement Vercel
 _CRON_SECRET = os.environ.get("CRON_SECRET", "")
+
 
 # ---------------------------------------------------------------------------
 # Le Job Quotidien (Anciennement dans scheduler.py)
 # ---------------------------------------------------------------------------
+
 async def daily_prediction_job():
     """Exécute le cycle complet : Scraping -> Prédiction -> Sauvegarde Neon"""
     today = datetime.date.today().isoformat()
@@ -136,12 +118,63 @@ async def daily_prediction_job():
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _verify_cron_secret(provided: str | None) -> None:
+    """Vérifie le header X-Cron-Secret. Bloque si CRON_SECRET est défini en prod."""
+    if _CRON_SECRET and provided != _CRON_SECRET:
+        raise HTTPException(status_code=401, detail="Non autorisé : X-Cron-Secret invalide.")
+
+
+def _fetch_coupons(match_date: str, league: str | None, min_confidence: float) -> dict:
+    try:
+        if league:
+            sql = """
+                SELECT * FROM predictions_history
+                WHERE match_date = %s AND confidence_rate >= %s AND league = %s
+                ORDER BY confidence_rate DESC
+            """
+            rows = execute(sql, (match_date, min_confidence, league), fetch=True)
+        else:
+            sql = """
+                SELECT * FROM predictions_history
+                WHERE match_date = %s AND confidence_rate >= %s
+                ORDER BY confidence_rate DESC
+            """
+            rows = execute(sql, (match_date, min_confidence), fetch=True)
+
+        return {"date": match_date, "count": len(rows), "coupons": rows}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erreur Neon : {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Routes / Endpoints
 # ---------------------------------------------------------------------------
 
 @app.get("/", tags=["Health"])
 async def root():
-    return {"status": "ok", "message": "IA-BetPredict API is running on Vercel"}
+    return {"status": "ok", "message": "IA-BetPredict API is running on Vercel/Render"}
+
+
+@app.get("/predictions/live", tags=["Predictions"])
+async def get_live_predictions():
+    """Récupère les matchs live, calcule les features et retourne les prédictions."""
+    try:
+        matches = fetch_inplay_matches()
+        all_coupons = []
+        
+        for match in matches:
+            # 1. Compute features dynamically for the live match
+            match["features"] = compute_features(match)
+            # 2. Generate prediction coupons using your trained .pkl models
+            coupons = generate_coupons(match)
+            all_coupons.extend(coupons)
+            
+        return {"date": datetime.date.today().isoformat(), "count": len(all_coupons), "coupons": all_coupons}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erreur prédiction live : {exc}")
 
 
 @app.get("/coupons", tags=["Coupons"])
@@ -193,40 +226,9 @@ async def run_daily_job(x_cron_secret: str | None = Header(default=None)):
     _verify_cron_secret(x_cron_secret)
     try:
         await daily_prediction_job()
-        return {"status": "ok", "message": "Job exécuté par Vercel avec succès"}
+        return {"status": "ok", "message": "Job exécuté avec succès"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _verify_cron_secret(provided: str | None) -> None:
-    """Vérifie le header X-Cron-Secret. Bloque si CRON_SECRET est défini en prod."""
-    if _CRON_SECRET and provided != _CRON_SECRET:
-        raise HTTPException(status_code=401, detail="Non autorisé : X-Cron-Secret invalide.")
-
-
-def _fetch_coupons(match_date: str, league: str | None, min_confidence: float) -> dict:
-    try:
-        if league:
-            sql = """
-                SELECT * FROM predictions_history
-                WHERE match_date = %s AND confidence_rate >= %s AND league = %s
-                ORDER BY confidence_rate DESC
-            """
-            rows = execute(sql, (match_date, min_confidence, league), fetch=True)
-        else:
-            sql = """
-                SELECT * FROM predictions_history
-                WHERE match_date = %s AND confidence_rate >= %s
-                ORDER BY confidence_rate DESC
-            """
-            rows = execute(sql, (match_date, min_confidence), fetch=True)
-
-        return {"date": match_date, "count": len(rows), "coupons": rows}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erreur Neon : {exc}")
 
 
 @app.get("/matches/today", tags=["Matches"])
@@ -242,13 +244,8 @@ async def get_todays_matches():
 
 @app.get("/matches/inplay", tags=["Matches"])
 async def get_inplay_matches():
-    """Retourne les matchs actuellement en cours détectés via le scraper.
-
-    Note: la détection dépend de la disponibilité des endpoints Sofascore.
-    """
+    """Retourne les matchs actuellement en cours détectés via le scraper."""
     try:
-        # Import here to avoid circular issues in some environments
-        from scraper import fetch_inplay_matches
         matches = fetch_inplay_matches()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erreur inplay scraping : {exc}")
