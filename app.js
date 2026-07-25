@@ -57,22 +57,33 @@ async function loadCoupons() {
   showState("loading");
 
   try {
-    // 1. Fetch daily scheduled coupons from DB
+    // 1. Charger les coupons de la base de données
     const dailyRes = await fetch(`${API_BASE}/coupons`);
-    if (!dailyRes.ok) throw new Error(`Daily coupons API failed: ${dailyRes.status}`);
+    if (!dailyRes.ok) throw new Error(`Erreur coupons (${dailyRes.status})`);
     const dailyData = await dailyRes.json();
     
-    // 2. Fetch live match predictions from ML models
-    const liveRes = await fetch(`${API_BASE}/predictions/live`);
-        if (!liveRes.ok) throw new Error(`Live predictions API failed: ${liveRes.status}`);
+    // 2. Charger le live de manière ISOLEEE (ne bloque pas le reste si échec)
+    let liveCoupons = [];
+    try {
+      const liveRes = await fetch(`${API_BASE}/predictions/live`);
+      if (liveRes.ok) {
         const liveData = await liveRes.json();
-    // 3. Merge daily and live coupons into one array
-    allCoupons = [...dailyData.coupons, ...liveData.coupons] || [];
+        liveCoupons = liveData.coupons || [];
+      }
+    } catch (liveErr) {
+      console.warn("[app] Live indisponible ou vide :", liveErr);
+    }
+
+    // 3. Fusionner les données reçues
+    const dailyCoupons = dailyData.coupons || [];
+    allCoupons = [...dailyCoupons, ...liveCoupons];
     
+    // 4. Mettre à jour l'IHM
     renderCoupons();
     updateStats();
+
   } catch (err) {
-    console.error("[app] Erreur API :", err);
+    console.error("[app] Erreur API globale :", err);
     showState("error", `Impossible de joindre l'API. (${err.message})`);
   }
 }
