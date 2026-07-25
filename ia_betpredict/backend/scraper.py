@@ -128,7 +128,8 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
     print(f"[scraper] Récupération des matchs pour le {date_str} via scheduled-events…")
     
-    url = f"{BASE_URL}/scheduled-events/{date_str}"
+    # 👈 AJOUT DE /sport/football/ ICI
+    url = f"{BASE_URL}/sport/football/scheduled-events/{date_str}"
     data = _get(url)
 
     if not data or "events" not in data:
@@ -142,7 +143,6 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
         ut = event.get("tournament", {}).get("uniqueTournament", {})
         tid = ut.get("id")
 
-        # Vérifier si l'événement fait partie de nos ligues cibles
         if tid in TOURNAMENT_TO_LEAGUE:
             league_name = TOURNAMENT_TO_LEAGUE[tid]
             ts = event.get("startTimestamp", 0)
@@ -165,7 +165,8 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 def fetch_inplay_matches() -> list[dict]:
     """Récupère les matchs en direct."""
     date_str = datetime.date.today().isoformat()
-    data = _get(f"{BASE_URL}/scheduled-events/{date_str}")
+    # 👈 AJOUT DE /sport/football/ ICI ÉGALEMENT
+    data = _get(f"{BASE_URL}/sport/football/scheduled-events/{date_str}")
     if not data:
         return []
 
