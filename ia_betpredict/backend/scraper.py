@@ -84,25 +84,29 @@ def _get_proxy() -> dict[str, str] | None:
 
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
 
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
+
 def _get(url: str, retries: int = 3) -> dict | None:
-    # Si une clé ScraperAPI est configurée, on passe par leur proxy anti-bot
+    # 1. Utilisation de ScraperAPI si la clé est présente
     if SCRAPER_API_KEY:
         payload = {
             'api_key': SCRAPER_API_KEY,
             'url': url,
-            'render': 'false'  # Pas besoin de JS pour les endpoints JSON
+            'keep_headers': 'true',  # 👈 OBLIGATOIRE : Transmet nos headers (Referer, UA...) à Sofascore
         }
         for attempt in range(retries):
             try:
-                resp = SESSION.get('https://api.scraperapi.com', params=payload, timeout=20)
+                # ScraperAPI gère les proxies tout seul, on utilise un GET standard avec nos HEADERS
+                resp = SESSION.get('https://api.scraperapi.com', params=payload, headers=HEADERS, timeout=25)
                 if resp.status_code == 200:
                     return resp.json()
+                print(f"[scraper] ScraperAPI Status {resp.status_code} pour {url}")
             except Exception as exc:
                 print(f"[scraper] Erreur ScraperAPI ({attempt+1}/{retries}) : {exc}")
                 time.sleep(2)
         return None
 
-    # Fallback standard si pas de clé API
+    # 2. Fallback standard sans ScraperAPI
     for attempt in range(retries):
         try:
             resp = SESSION.get(url, headers=HEADERS, timeout=10)
