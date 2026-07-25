@@ -65,6 +65,7 @@ async function loadCoupons() {
     // 2. Fetch live match predictions from ML models
     const liveRes = await fetch(`${API_BASE}/predictions/live`);
         if (!liveRes.ok) throw new Error(`Live predictions API failed: ${liveRes.status}`);
+        const liveData = await liveRes.json();
     // 3. Merge daily and live coupons into one array
     allCoupons = [...dailyData.coupons, ...liveData.coupons] || [];
     
