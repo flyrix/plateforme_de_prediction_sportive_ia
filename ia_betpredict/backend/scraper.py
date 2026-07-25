@@ -86,18 +86,18 @@ SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
 
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
 
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
+
 def _get(url: str, retries: int = 3) -> dict | None:
-    # 1. Utilisation de ScraperAPI si la clé est présente
+    # 1. Requête via ScraperAPI
     if SCRAPER_API_KEY:
         payload = {
             'api_key': SCRAPER_API_KEY,
             'url': url,
-            'keep_headers': 'true',  # 👈 OBLIGATOIRE : Transmet nos headers (Referer, UA...) à Sofascore
         }
         for attempt in range(retries):
             try:
-                # ScraperAPI gère les proxies tout seul, on utilise un GET standard avec nos HEADERS
-                resp = SESSION.get('https://api.scraperapi.com', params=payload, headers=HEADERS, timeout=25)
+                resp = SESSION.get('https://api.scraperapi.com', params=payload, timeout=25)
                 if resp.status_code == 200:
                     return resp.json()
                 print(f"[scraper] ScraperAPI Status {resp.status_code} pour {url}")
@@ -106,7 +106,7 @@ def _get(url: str, retries: int = 3) -> dict | None:
                 time.sleep(2)
         return None
 
-    # 2. Fallback standard sans ScraperAPI
+    # 2. Requete directe (sans ScraperAPI)
     for attempt in range(retries):
         try:
             resp = SESSION.get(url, headers=HEADERS, timeout=10)
@@ -126,11 +126,16 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
     if date_str is None:
         date_str = datetime.date.today().isoformat()
 
-    print(f"[scraper] Récupération des matchs pour le {date_str} via scheduled-events…")
+    print(f"[scraper] Récupération des matchs pour le {date_str}…")
     
-    # 👈 AJOUT DE /sport/football/ ICI
-    url = f"{BASE_URL}/sport/football/scheduled-events/{date_str}"
+    # Endpoint principal Sofascore Football par date
+    url = f"{BASE_URL}/category/football/scheduled-events/{date_str}"
     data = _get(url)
+
+    # Backup si la catégorie globale est vide
+    if not data or "events" not in data:
+        url = f"{BASE_URL}/event/scheduled-events/{date_str}"
+        data = _get(url)
 
     if not data or "events" not in data:
         print(f"[scraper] ⚠️ Impossible de récupérer les événements pour {date_str}")
@@ -160,7 +165,6 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
     print(f"[scraper] ✅ {len(all_matches)} match(s) ciblé(s) trouvé(s) sur {len(events)} évènements aujourd'hui.")
     return all_matches
-
 
 def fetch_inplay_matches() -> list[dict]:
     """Récupère les matchs en direct."""
