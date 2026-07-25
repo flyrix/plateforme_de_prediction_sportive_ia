@@ -10,7 +10,10 @@
 // En production, définis window.ENV_API_BASE avant ce script :
 // <script>window.ENV_API_BASE = "https://ia-betpredict-api.onrender.com";</script>
 // En développement local : http://127.0.0.1:8000
-const API_BASE = window.ENV_API_BASE || window.location.origin || "http://127.0.0.1:8000";
+//|| window.location.origin || "http://127.0.0.1:8000"
+const RENDER_API_URL = "https://plateforme-de-prediction-sportive-ia.onrender.com";
+
+const API_BASE = window.ENV_API_BASE || RENDER_API_URL;
 console.log(`[app] API_BASE=${API_BASE}`);
 
 // Icônes des ligues
@@ -56,13 +59,12 @@ async function loadCoupons() {
   try {
     // 1. Fetch daily scheduled coupons from DB
     const dailyRes = await fetch(`${API_BASE}/coupons`);
-    if (!dailyRes.ok) throw new Error(`HTTP ${dailyRes.status}`);
+    if (!dailyRes.ok) throw new Error(`Daily coupons API failed: ${dailyRes.status}`);
     const dailyData = await dailyRes.json();
     
     // 2. Fetch live match predictions from ML models
     const liveRes = await fetch(`${API_BASE}/predictions/live`);
-    const liveData = liveRes.ok ? await liveRes.json() : { coupons: [] };
-
+        if (!liveRes.ok) throw new Error(`Live predictions API failed: ${liveRes.status}`);
     // 3. Merge daily and live coupons into one array
     allCoupons = [...dailyData.coupons, ...liveData.coupons] || [];
     
