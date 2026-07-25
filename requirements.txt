@@ -1,6 +1,6 @@
 fastapi==0.115.0
 uvicorn==0.30.6
-curl_cffi==0.9.1
+curl_cffi>=0.7.4
 xgboost==2.1.1
 pandas==2.2.3
 joblib==1.4.2
