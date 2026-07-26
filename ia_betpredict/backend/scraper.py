@@ -182,7 +182,8 @@ def _get_team_features(team_id: int) -> dict:
 
 
 def _get_h2h_features(home_id: int, away_id: int) -> dict:
-    data = _get(f"{BASE_URL}/event/0/h2h?homeTeamId={home_id}&awayTeamId={away_id}")
+    # 👈 URL exacte corrigée : /event/h2h/custom/{home_id}/{away_id}
+    data = _get(f"{BASE_URL}/event/h2h/custom/{home_id}/{away_id}")
     default = {"h2h_over25_rate": 0.50, "h2h_btts_rate": 0.45}
     if not data:
         return default
