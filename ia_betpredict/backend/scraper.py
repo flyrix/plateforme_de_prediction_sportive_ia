@@ -1,13 +1,15 @@
 """
 scraper.py
 ----------
-Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore + ScrapingAnt.
+Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore
+en utilisant curl_cffi avec une empreinte Chrome complète.
 """
 
 import datetime
 import html
 import json
 import os
+import random
 import re
 import time
 from curl_cffi import requests
@@ -29,47 +31,13 @@ LEAGUE_IDS = {
     "NPSL":                  13450,  # USA
     "NPSL Founders Cup":     13742,  # USA
     "Club Friendlies":       853,    # Matchs amicaux
-    
+    "Women Club Friendlies": 24932,
 }
 LEAGUE_ID_TO_NAME = {tid: name for name, tid in LEAGUE_IDS.items()}
 
 FORM_WINDOW = 5
 
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except ValueError:
-        print(f"[scraper] {name} invalide, fallback={default}")
-        return default
-
-
-# Récupération de la clé API ScrapingAnt depuis les variables d'environnement
-SCRAPINGANT_KEY = os.getenv("SCRAPINGANT_KEY", "").strip()
-SCRAPINGANT_BROWSER = os.getenv("SCRAPINGANT_BROWSER", "false").lower() in {"1", "true", "yes", "on"}
-SCRAPINGANT_PROXY_TYPE = os.getenv("SCRAPINGANT_PROXY_TYPE", "datacenter").strip()
-SCRAPINGANT_PROXY_COUNTRY = os.getenv("SCRAPINGANT_PROXY_COUNTRY", "").strip().upper()
-SCRAPINGANT_TIMEOUT = _env_int("SCRAPINGANT_TIMEOUT", 25)
-SCRAPINGANT_RETURN_PAGE_SOURCE = os.getenv("SCRAPINGANT_RETURN_PAGE_SOURCE", "true").lower() in {
-    "1", "true", "yes", "on"
-}
-
-SESSION = requests.Session(impersonate="chrome120")
-SESSION.trust_env = False
-
-# Headers imitant un vrai navigateur
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Referer": "https://www.sofascore.com/",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-}
-
-# ---------------------------------------------------------------------------
-# Configuration & Overrides
-# ---------------------------------------------------------------------------
-
-# Dictionnaire des ID de saisons pour éviter d'appeler l'endpoint /seasons
+# Dictionnaire des ID de saisons pour éviter tout appel HTTP vers /seasons
 SEASON_OVERRIDES: dict[int, int] = {
     41: 61858,     # Veikkausliiga
     20: 61582,     # Eliteserien
@@ -78,111 +46,70 @@ SEASON_OVERRIDES: dict[int, int] = {
     13363: 67400,  # USL Championship
     13362: 67401,  # USL League One
     13546: 67402,  # USL League Two
+    13450: 67403,  # NPSL
+    13742: 67404,  # NPSL Founders Cup
     853: 68000,    # Club Friendlies
+    24932: 68001,  # Women Club Friendlies
+}
+
+# Session HTTP avec empreinte TLS Chrome
+SESSION = requests.Session(impersonate="chrome120")
+SESSION.trust_env = False
+
+# Headers HTTP complets imitant un navigateur réel
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "max-age=0",
+    "Origin": "https://www.sofascore.com",
+    "Referer": "https://www.sofascore.com/",
+    "Sec-Ch-Ua": '"Not-A.Brand";v="99", "Chromium";v="124", "Google Chrome";v="124"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
 }
 
 # ---------------------------------------------------------------------------
-# Helpers HTTP avec ScrapingAnt
+# Helper HTTP direct (Exécution réseau)
 # ---------------------------------------------------------------------------
 
-def _target_headers_for_scrapingant() -> dict:
-    # ScrapingAnt ne transmet les headers cible que s'ils sont préfixés par Ant-.
-    return {f"Ant-{name}": value for name, value in HEADERS.items()}
-
-
-def _parse_json_response(resp, source_url: str) -> dict | None:
-    target_status = resp.headers.get("ant-page-status-code")
-    if target_status and target_status.isdigit() and int(target_status) >= 400:
-        print(f"[scraper] Cible HTTP {target_status} pour {source_url}")
-        return None
-
-    try:
-        return resp.json()
-    except Exception:
-        text = (resp.text or "").strip()
-        if not text:
-            return None
-
-        # En mode browser, les réponses JSON peuvent revenir dans un <pre>.
-        pre = re.search(r"<pre[^>]*>(.*?)</pre>", text, flags=re.IGNORECASE | re.DOTALL)
-        if pre:
-            text = html.unescape(pre.group(1)).strip()
-
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            snippet = text[:160].replace("\n", " ")
-            print(f"[scraper] Réponse non-JSON pour {source_url}: {snippet}")
-            return None
-
-
-def _get_via_scrapingant(url: str, retries: int) -> dict | None:
-    params = {
-        "x-api-key": SCRAPINGANT_KEY,
-        "url": url,
-        "browser": str(SCRAPINGANT_BROWSER).lower(),
-        "timeout": str(SCRAPINGANT_TIMEOUT),
-    }
-    if SCRAPINGANT_BROWSER and SCRAPINGANT_RETURN_PAGE_SOURCE:
-        params["return_page_source"] = "true"
-    if SCRAPINGANT_PROXY_TYPE:
-        params["proxy_type"] = SCRAPINGANT_PROXY_TYPE
-    if SCRAPINGANT_PROXY_COUNTRY:
-        params["proxy_country"] = SCRAPINGANT_PROXY_COUNTRY
-
-    for attempt in range(retries):
-        try:
-            resp = SESSION.get(
-                "https://api.scrapingant.com/v2/general",
-                params=params,
-                headers=_target_headers_for_scrapingant(),
-                timeout=SCRAPINGANT_TIMEOUT + 5,
-            )
-            if resp.status_code == 200:
-                data = _parse_json_response(resp, url)
-                if data and "detail" not in data:
-                    return data
-                if data and "detail" in data:
-                    print(f"[scraper] ScrapingAnt detail: {data['detail']}")
-            else:
-                print(f"[scraper] ScrapingAnt HTTP {resp.status_code} pour {url}: {resp.text[:120]}")
-        except Exception as exc:
-            print(f"[scraper] Erreur ScrapingAnt ({attempt + 1}/{retries}) : {exc}")
-        time.sleep(2 * (attempt + 1))
-    return None
-
-
 def _get(url: str, retries: int = 3) -> dict | None:
-    if SCRAPINGANT_KEY:
-        data = _get_via_scrapingant(url, retries)
-        if data is not None:
-            return data
-
-    # Fallback Direct (curl_cffi passe le Cloudflare de Sofascore sans problème)
+    """Effectue une requête GET directe vers l'API Sofascore via curl_cffi."""
     for attempt in range(retries):
         try:
+            # Légère temporisation aléatoire pour simuler un comportement humain
+            time.sleep(random.uniform(0.2, 0.5))
+            
             resp = SESSION.get(url, headers=HEADERS, timeout=12)
+            
             if resp.status_code == 200:
-                return _parse_json_response(resp, url)
+                try:
+                    return resp.json()
+                except Exception:
+                    print(f"[scraper] Réponse non-JSON reçue pour {url}")
+                    return None
             elif resp.status_code == 404:
                 return None
-            elif resp.status_code in {403, 429}:
-                print(f"[scraper] Sofascore HTTP {resp.status_code} pour {url}")
+            
+            print(f"[scraper] Sofascore HTTP {resp.status_code} pour {url}")
+            
+            if resp.status_code in {403, 429}:
+                time.sleep(2 * (attempt + 1))
+                
         except Exception as exc:
             print(f"[scraper] Erreur Sofascore directe ({attempt + 1}/{retries}) : {exc}")
             time.sleep(1)
             
     return None
+
 # ---------------------------------------------------------------------------
 # Extraction des saisons et matchs
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Extraction des saisons
-# ---------------------------------------------------------------------------
-
 def _get_current_season_id(tournament_id: int) -> int | None:
-    # 👈 On vérifie d'abord si l'ID est court-circuité par SEASON_OVERRIDES
     if tournament_id in SEASON_OVERRIDES:
         return SEASON_OVERRIDES[tournament_id]
 
@@ -339,7 +266,8 @@ def _get_team_features(team_id: int) -> dict:
         aws = ev.get("awayScore", {}).get("current", 0) or 0
         ts  = ev.get("startTimestamp", 0)
         gf, ga = (hs, aws) if ht_id == team_id else (aws, hs)
-        scored.append(gf); conceded.append(ga)
+        scored.append(gf)
+        conceded.append(ga)
         btts_l.append(1 if gf > 0 and ga > 0 else 0)
         over25_l.append(1 if gf + ga > 2.5 else 0)
         dates.append(ts)
@@ -361,7 +289,6 @@ def _get_team_features(team_id: int) -> dict:
 
 
 def _get_h2h_features(home_id: int, away_id: int) -> dict:
-    # 👈 URL Sofascore correcte pour le H2H
     data = _get(f"{BASE_URL}/event/h2h/custom/{home_id}/{away_id}")
     default = {"h2h_over25_rate": 0.50, "h2h_btts_rate": 0.45}
     if not data:
