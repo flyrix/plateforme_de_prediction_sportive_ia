@@ -27,7 +27,7 @@ LEAGUE_IDS = {
     "NPSL":                  13450,  # USA
     "NPSL Founders Cup":     13742,  # USA
     "Club Friendlies":       853,    # Matchs amicaux
-    "Women Club Friendlies": 24932,
+    
 }
 
 FORM_WINDOW = 5
@@ -67,29 +67,40 @@ SEASON_OVERRIDES: dict[int, int] = {
 # ---------------------------------------------------------------------------
 
 def _get(url: str, retries: int = 3) -> dict | None:
+    # Si ScrapingAnt est configuré, on l'utilise
     if SCRAPINGANT_KEY:
+        import urllib.parse
         encoded_url = urllib.parse.quote(url)
-        # 👈 browser=true est nécessaire pour contourner les erreurs 423 de Sofascore
-        ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=true"
+        ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
         for attempt in range(retries):
             try:
-                resp = SESSION.get(ant_url, timeout=30)
+                resp = SESSION.get(ant_url, timeout=20)
                 if resp.status_code == 200:
-                    return resp.json()
-                print(f"[scraper] ScrapingAnt Status {resp.status_code} pour {url}")
+                    try:
+                        return resp.json()
+                    except Exception:
+                        # Si ScrapingAnt renvoie du HTML au lieu de JSON
+                        print(f"[scraper] Réponse non-JSON reçue de ScrapingAnt pour {url}")
+                else:
+                    print(f"[scraper] ScrapingAnt HTTP {resp.status_code} pour {url}")
             except Exception as exc:
-                print(f"[scraper] Erreur réseau ScrapingAnt ({attempt+1}/{retries}) : {exc}")
+                print(f"[scraper] Erreur ScrapingAnt ({attempt+1}/{retries}) : {exc}")
                 time.sleep(2)
-        return None
 
-    # Fallback si exécuté en local sans clé ScrapingAnt
+    # Fallback Direct (curl_cffi passe le Cloudflare de Sofascore sans problème)
     for attempt in range(retries):
         try:
-            resp = SESSION.get(url, headers=HEADERS, timeout=10)
+            resp = SESSION.get(url, headers=HEADERS, timeout=12)
             if resp.status_code == 200:
-                return resp.json()
-        except Exception:
+                try:
+                    return resp.json()
+                except Exception:
+                    return None
+            elif resp.status_code == 404:
+                return None
+        except Exception as exc:
             time.sleep(1)
+            
     return None
 # ---------------------------------------------------------------------------
 # Extraction des saisons et matchs
