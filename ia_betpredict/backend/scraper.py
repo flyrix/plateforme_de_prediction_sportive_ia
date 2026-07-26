@@ -47,17 +47,33 @@ HEADERS = {
 }
 
 # ---------------------------------------------------------------------------
-# Helper HTTP avec ScrapingAnt
+# Configuration & Overrides
+# ---------------------------------------------------------------------------
+
+# Dictionnaire des ID de saisons pour éviter d'appeler l'endpoint /seasons
+SEASON_OVERRIDES: dict[int, int] = {
+    41: 61858,     # Veikkausliiga
+    20: 61582,     # Eliteserien
+    242: 67388,    # MLS
+    325: 67345,    # Serie A Brasil
+    13363: 67400,  # USL Championship
+    13362: 67401,  # USL League One
+    13546: 67402,  # USL League Two
+    853: 68000,    # Club Friendlies
+}
+
+# ---------------------------------------------------------------------------
+# Helper HTTP avec ScrapingAnt (Passage à browser=true)
 # ---------------------------------------------------------------------------
 
 def _get(url: str, retries: int = 3) -> dict | None:
-    # Si la clé ScrapingAnt est configurée
     if SCRAPINGANT_KEY:
         encoded_url = urllib.parse.quote(url)
-        ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
+        # 👈 browser=true est nécessaire pour contourner les erreurs 423 de Sofascore
+        ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=true"
         for attempt in range(retries):
             try:
-                resp = SESSION.get(ant_url, timeout=20)
+                resp = SESSION.get(ant_url, timeout=30)
                 if resp.status_code == 200:
                     return resp.json()
                 print(f"[scraper] ScrapingAnt Status {resp.status_code} pour {url}")
@@ -66,7 +82,7 @@ def _get(url: str, retries: int = 3) -> dict | None:
                 time.sleep(2)
         return None
 
-    # Fallback exécuté en local sans clé ScrapingAnt
+    # Fallback si exécuté en local sans clé ScrapingAnt
     for attempt in range(retries):
         try:
             resp = SESSION.get(url, headers=HEADERS, timeout=10)
@@ -75,18 +91,24 @@ def _get(url: str, retries: int = 3) -> dict | None:
         except Exception:
             time.sleep(1)
     return None
-
 # ---------------------------------------------------------------------------
 # Extraction des saisons et matchs
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Extraction des saisons
+# ---------------------------------------------------------------------------
+
 def _get_current_season_id(tournament_id: int) -> int | None:
+    # 👈 On vérifie d'abord si l'ID est court-circuité par SEASON_OVERRIDES
+    if tournament_id in SEASON_OVERRIDES:
+        return SEASON_OVERRIDES[tournament_id]
+
     data = _get(f"{BASE_URL}/unique-tournament/{tournament_id}/seasons")
     if not data:
         return None
     seasons = data.get("seasons", [])
     return seasons[0]["id"] if seasons else None
-
 
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
     season_id = _get_current_season_id(tournament_id)
