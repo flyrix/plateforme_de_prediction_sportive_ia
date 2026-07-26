@@ -7,6 +7,7 @@ Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore 
 import datetime
 import time
 import os
+import urllib.parse
 from curl_cffi import requests
 
 # ---------------------------------------------------------------------------
@@ -16,32 +17,24 @@ from curl_cffi import requests
 BASE_URL = "https://api.sofascore.com/api/v1"
 
 LEAGUE_IDS = {
-    "Veikkausliiga":       41,     # Finlande
-    "Eliteserien":         20,     # Norvège
-    "MLS":                 242,    # États-Unis
-    "Serie A Brasil":      325,    # Brésil
-    "USL Championship":    13363,  # USA
-    "USL League One":      13362,  # USA
-    "USL League Two":      13546,  # USA
-    "NPSL":                13450,  # USA
-    "NPSL Founders Cup":   13742,  # USA
-    "Club Friendlies":     853,    # Matchs amicaux
-}
-
-# 👈 PLACEMENT DE SEASON_OVERRIDES
-# Coder en dur les IDs de saison évite d'appeler l'endpoint /seasons et économise vos crédits API.
-SEASON_OVERRIDES: dict[int, int] = {
-    41: 61858,     # Veikkausliiga
-    20: 61582,     # Eliteserien
-    242: 67388,    # MLS
-    325: 67345,    # Serie A Brasil
-    13363: 67400,  # USL Championship
-    13362: 67401,  # USL League One
-    13546: 67402,  # USL League Two
-    853: 68000,    # Club Friendlies
+    "Veikkausliiga":         41,     # Finlande
+    "Eliteserien":           20,     # Norvège
+    "MLS":                   242,    # États-Unis
+    "Serie A Brasil":        325,    # Brésil
+    "USL Championship":      13363,  # USA
+    "USL League One":        13362,  # USA
+    "USL League Two":        13546,  # USA
+    "NPSL":                  13450,  # USA
+    "NPSL Founders Cup":     13742,  # USA
+    "Club Friendlies":       853,    # Matchs amicaux
+    "Women Club Friendlies": 24932,
 }
 
 FORM_WINDOW = 5
+
+# Récupération de la clé API ScrapingAnt depuis les variables d'environnement
+SCRAPINGANT_KEY = os.getenv("SCRAPINGANT_KEY", "").strip()
+
 SESSION = requests.Session(impersonate="chrome120")
 SESSION.trust_env = False
 
@@ -57,11 +50,9 @@ HEADERS = {
 # Helper HTTP avec ScrapingAnt
 # ---------------------------------------------------------------------------
 
-SCRAPINGANT_KEY = os.getenv("SCRAPINGANT_KEY", "").strip()
-
 def _get(url: str, retries: int = 3) -> dict | None:
+    # Si la clé ScrapingAnt est configurée
     if SCRAPINGANT_KEY:
-        import urllib.parse
         encoded_url = urllib.parse.quote(url)
         ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
         for attempt in range(retries):
@@ -69,12 +60,13 @@ def _get(url: str, retries: int = 3) -> dict | None:
                 resp = SESSION.get(ant_url, timeout=20)
                 if resp.status_code == 200:
                     return resp.json()
+                print(f"[scraper] ScrapingAnt Status {resp.status_code} pour {url}")
             except Exception as exc:
-                print(f"[scraper] Erreur ScrapingAnt ({attempt+1}/{retries}) : {exc}")
+                print(f"[scraper] Erreur réseau ScrapingAnt ({attempt+1}/{retries}) : {exc}")
                 time.sleep(2)
         return None
 
-    # Fallback si exécuté en local sans clé API
+    # Fallback exécuté en local sans clé ScrapingAnt
     for attempt in range(retries):
         try:
             resp = SESSION.get(url, headers=HEADERS, timeout=10)
@@ -89,16 +81,12 @@ def _get(url: str, retries: int = 3) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def _get_current_season_id(tournament_id: int) -> int | None:
-    # 1. Vérifier si l'ID de la saison est déjà défini en dur (Court-circuite l'appel HTTP)
-    if tournament_id in SEASON_OVERRIDES:
-        return SEASON_OVERRIDES[tournament_id]
-
-    # 2. Requête API uniquement si l'override n'est pas disponible
     data = _get(f"{BASE_URL}/unique-tournament/{tournament_id}/seasons")
     if not data:
         return None
     seasons = data.get("seasons", [])
     return seasons[0]["id"] if seasons else None
+
 
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
     season_id = _get_current_season_id(tournament_id)
@@ -195,7 +183,8 @@ def _get_team_features(team_id: int) -> dict:
 
 
 def _get_h2h_features(home_id: int, away_id: int) -> dict:
-    data = _get(f"{BASE_URL}/event/h2h/custom/{home_id}/{away_id}", retries=1)
+    # 👈 URL Sofascore correcte pour le H2H
+    data = _get(f"{BASE_URL}/event/h2h/custom/{home_id}/{away_id}")
     default = {"h2h_over25_rate": 0.50, "h2h_btts_rate": 0.45}
     if not data:
         return default
@@ -223,7 +212,7 @@ def compute_features(match: dict) -> dict:
     h2h = _get_h2h_features(match["home_team_id"], match["away_team_id"])
 
     from predictor import COUNTRY_ENCODING
-    is_neutral = 1 if match["league"] == "Club Friendlies" else 0
+    is_neutral = 1 if match["league"] in ["Club Friendlies", "Women Club Friendlies"] else 0
 
     return {
         "home_goals_exp":    hf["avg_scored"],
