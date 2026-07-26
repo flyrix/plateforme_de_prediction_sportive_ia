@@ -126,16 +126,11 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
     if date_str is None:
         date_str = datetime.date.today().isoformat()
 
-    print(f"[scraper] Récupération des matchs pour le {date_str}…")
+    print(f"[scraper] Récupération des matchs pour le {date_str} via sport/0/scheduled-events…")
     
-    # Endpoint principal Sofascore Football par date
-    url = f"{BASE_URL}/category/football/scheduled-events/{date_str}"
+    # Utilisation de l'ID sport 0 (Football)
+    url = f"{BASE_URL}/sport/0/scheduled-events/{date_str}"
     data = _get(url)
-
-    # Backup si la catégorie globale est vide
-    if not data or "events" not in data:
-        url = f"{BASE_URL}/event/scheduled-events/{date_str}"
-        data = _get(url)
 
     if not data or "events" not in data:
         print(f"[scraper] ⚠️ Impossible de récupérer les événements pour {date_str}")
@@ -170,7 +165,7 @@ def fetch_inplay_matches() -> list[dict]:
     """Récupère les matchs en direct."""
     date_str = datetime.date.today().isoformat()
     # 👈 AJOUT DE /sport/football/ ICI ÉGALEMENT
-    data = _get(f"{BASE_URL}/sport/football/scheduled-events/{date_str}")
+    data = _get(f"{BASE_URL}/sport/0/scheduled-events/{date_str}")
     if not data:
         return []
 
