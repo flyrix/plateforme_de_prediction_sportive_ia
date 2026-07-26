@@ -48,9 +48,9 @@ ALLOWED_ORIGINS=https://ia-betpredict.vercel.app
 Exporte depuis Google Colab avec les noms exacts attendus :
 ```python
 import joblib
-joblib.dump(model_winner, "model_winner.pkl")   # Double Chance (1X / X2)
-joblib.dump(model_goals,  "model_goals.pkl")    # Over 2.5
-joblib.dump(model_btts,   "model_btts.pkl")     # Both Teams To Score
+joblib.dump(model_winner, "model_winner_global.pkl")   # Résultat 1N2 -> Double Chance
+joblib.dump(model_goals,  "model_goals_global.pkl")    # Over 2.5
+joblib.dump(model_btts,   "model_btts_global.pkl")     # Both Teams To Score
 ```
 Place les `.pkl` dans `ia_betpredict/models/`.
 
@@ -78,6 +78,9 @@ ou utilise l'extension Live Server de VS Code.
 | GET | `/` | Healthcheck |
 | GET | `/coupons` | Coupons du jour |
 | GET | `/coupons/{date}` | Coupons d'une date (YYYY-MM-DD) |
+| GET | `/matches/today` | Matchs ciblés du jour |
+| GET | `/matches/inplay` | Matchs ciblés en cours |
+| GET | `/predictions/live` | Prédictions sur matchs live ciblés |
 | PATCH | `/coupons/{id}/status` | Mise à jour statut (Gagné/Perdu/En attente) |
 | POST | `/run-daily-job` | Déclenche le job manuellement |
 
@@ -104,15 +107,15 @@ ia-betpredict/
 ├── ia_betpredict/
 │   ├── backend/
 │   │   ├── main.py          # FastAPI + routes + Vercel Cron job
-│   │   ├── scraper.py       # Sofascore data fetcher (1 appel HTTP par date)
+│   │   ├── scraper.py       # Sofascore fetcher + ScrapingAnt fallback
 │   │   ├── predictor.py     # Chargement .pkl + génération coupons
 │   │   ├── db.py            # Connexion PostgreSQL (Neon, serverless-safe + retry)
 │   │   ├── schema.sql       # Schéma à exécuter dans Neon
 │   │   └── requirements.txt
 │   ├── models/
-│   │   ├── model_winner.pkl # Double Chance (1X / X2)
-│   │   ├── model_goals.pkl  # Over 2.5
-│   │   └── model_btts.pkl   # Both Teams To Score
+│   │   ├── model_winner_{group}.pkl # Résultat 1N2 -> Double Chance
+│   │   ├── model_goals_{group}.pkl  # Over 2.5
+│   │   └── model_btts_{group}.pkl   # Both Teams To Score
 │   └── .env                 # Variables d'environnement (ne pas commiter)
 ├── index.html               # Frontend PWA
 ├── style.css
@@ -163,14 +166,41 @@ Pour pointer le frontend vers l'API de production, ajoute dans `index.html`
 
 | Marché | Modèle | Seuil minimum |
 |---|---|---|
-| Double Chance 1X / X2 | `model_winner.pkl` | ≥ 65% |
-| Over 2.5 | `model_goals.pkl` | ≥ 60% |
-| BTTS | `model_btts.pkl` | ≥ 60% |
+| Double Chance 1X / X2 | `model_winner_{group}.pkl` | ≥ 65% |
+| Over 2.5 | `model_goals_{group}.pkl` | ≥ 60% |
+| BTTS | `model_btts_{group}.pkl` | ≥ 60% |
+
+> En phase de vérification des modèles, les seuils actifs peuvent être abaissés
+> dans `ia_betpredict/backend/predictor.py`.
+
+---
+
+## Scraping Sofascore
+
+Le scraper utilise d'abord l'endpoint global Sofascore
+`/sport/football/scheduled-events/{YYYY-MM-DD}` puis filtre les ligues cibles.
+Cela évite de dépendre d'IDs de saison figés. Si cet endpoint échoue, un fallback
+par ligue reste disponible.
+
+Variables ScrapingAnt recommandées :
+```
+SCRAPINGANT_KEY=<ta-cle>
+SCRAPINGANT_BROWSER=false
+SCRAPINGANT_PROXY_TYPE=datacenter
+SCRAPINGANT_PROXY_COUNTRY=
+SCRAPINGANT_TIMEOUT=25
+```
+
+Si Sofascore bloque encore les requêtes, teste :
+```
+SCRAPINGANT_PROXY_TYPE=residential
+SCRAPINGANT_PROXY_COUNTRY=US
+```
 
 ---
 
 ## Notes importantes
 
-- **Scraping Sofascore** : L'API utilisée est interne (reverse-engineered). En production sur Vercel, les IPs de datacenter peuvent être bloquées. Si c'est le cas, utilise un proxy rotatif résidentiel.
+- **Scraping Sofascore** : L'API utilisée est interne (reverse-engineered). En production, les IPs de datacenter peuvent être bloquées. Si c'est le cas, utilise `SCRAPINGANT_PROXY_TYPE=residential`.
 - **Mode démo** : Si les fichiers `.pkl` sont absents, l'API tourne en mode démo avec des probabilités aléatoires. Un warning `⚠️ MODE DÉMO` est affiché dans les logs.
 - **Unicité des prédictions** : Le `schema.sql` inclut une contrainte `UNIQUE (match_date, match_name, prediction_type)` pour éviter les doublons en cas de re-run du job.

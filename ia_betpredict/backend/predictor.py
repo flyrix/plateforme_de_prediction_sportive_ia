@@ -63,6 +63,7 @@ def _load_group(group: str) -> dict | None:
 
 # Chargement de tous les groupes spécialisés (y compris 'global')
 _SPECIALIZED: dict[str, dict] = {}
+_LEGACY_WINNER_WARNING_EMITTED = False
 
 for _g in ["nordique", "americain", "sud_americain", "amicaux", "global"]:
     _m = _load_group(_g)
@@ -129,6 +130,41 @@ def _predict_proba_dict(model, X):
     return {classes[i]: float(probs[i]) for i in range(len(classes))}
 
 
+def _class_probability(probas: dict, class_id: int) -> float:
+    return float(probas.get(class_id, probas.get(str(class_id), 0.0)))
+
+
+def _double_chance_predictions(model, X) -> dict:
+    """
+    Calcule 1X/X2 depuis un modèle résultat 3 classes :
+      0 = domicile, 1 = nul, 2 = extérieur.
+
+    Les anciens modèles binaires entraînés sur dc_1x restent compatibles,
+    mais ils ne produisent que 1X pour éviter de présenter l'inverse comme X2.
+    """
+    global _LEGACY_WINNER_WARNING_EMITTED
+
+    probs = _predict_proba_dict(model, X)
+    class_labels = {str(label) for label in probs.keys()}
+
+    if {"0", "1", "2"}.issubset(class_labels):
+        home = _class_probability(probs, 0)
+        draw = _class_probability(probs, 1)
+        away = _class_probability(probs, 2)
+        return {
+            "Double Chance 1X": round(home + draw, 4),
+            "Double Chance X2": round(draw + away, 4),
+        }
+
+    if {"0", "1"}.issubset(class_labels):
+        if not _LEGACY_WINNER_WARNING_EMITTED:
+            print("[predictor] ⚠️ Modèle winner legacy binaire : X2 ignoré jusqu'au réentraînement.")
+            _LEGACY_WINNER_WARNING_EMITTED = True
+        return {"Double Chance 1X": round(_class_probability(probs, 1), 4)}
+
+    raise ValueError(f"Classes inattendues pour model_winner: {sorted(class_labels)}")
+
+
 def predict_match(features: dict, league: str = "") -> dict:
     """
     Utilise le modèle spécialisé pour la ligue si disponible,
@@ -160,9 +196,7 @@ def predict_match(features: dict, league: str = "") -> dict:
     source = f"spécialisé '{group}'" if group in _SPECIALIZED else "global"
     print(f"[predictor] Modèle utilisé : {source} pour {league}")
 
-    dc_probs = _predict_proba_dict(models["dc"], X)
-    prob_1x = dc_probs.get(1, dc_probs.get("1", 0.0))
-    prob_x2 = dc_probs.get(0, dc_probs.get("0", 0.0))
+    winner_predictions = _double_chance_predictions(models["dc"], X)
 
     btts_probs = _predict_proba_dict(models["btts"], X)
     btts_proba = btts_probs.get(1, btts_probs.get("1", 0.0))
@@ -176,10 +210,9 @@ def predict_match(features: dict, league: str = "") -> dict:
         over_proba = round(1 / (1 + math.exp(-(goals_pred - 2.5))), 4)
 
     return {
-        "Double Chance 1X": round(float(prob_1x), 4),
-        "Double Chance X2": round(float(prob_x2), 4),
-        "Over 2.5":         round(float(over_proba), 4),
-        "BTTS":             round(float(btts_proba), 4),
+        **winner_predictions,
+        "Over 2.5": round(float(over_proba), 4),
+        "BTTS":     round(float(btts_proba), 4),
     }
 
 

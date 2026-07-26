@@ -5,9 +5,11 @@ Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore 
 """
 
 import datetime
-import time
+import html
+import json
 import os
-import urllib.parse
+import re
+import time
 from curl_cffi import requests
 
 # ---------------------------------------------------------------------------
@@ -29,11 +31,28 @@ LEAGUE_IDS = {
     "Club Friendlies":       853,    # Matchs amicaux
     
 }
+LEAGUE_ID_TO_NAME = {tid: name for name, tid in LEAGUE_IDS.items()}
 
 FORM_WINDOW = 5
 
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        print(f"[scraper] {name} invalide, fallback={default}")
+        return default
+
+
 # Récupération de la clé API ScrapingAnt depuis les variables d'environnement
 SCRAPINGANT_KEY = os.getenv("SCRAPINGANT_KEY", "").strip()
+SCRAPINGANT_BROWSER = os.getenv("SCRAPINGANT_BROWSER", "false").lower() in {"1", "true", "yes", "on"}
+SCRAPINGANT_PROXY_TYPE = os.getenv("SCRAPINGANT_PROXY_TYPE", "datacenter").strip()
+SCRAPINGANT_PROXY_COUNTRY = os.getenv("SCRAPINGANT_PROXY_COUNTRY", "").strip().upper()
+SCRAPINGANT_TIMEOUT = _env_int("SCRAPINGANT_TIMEOUT", 25)
+SCRAPINGANT_RETURN_PAGE_SOURCE = os.getenv("SCRAPINGANT_RETURN_PAGE_SOURCE", "true").lower() in {
+    "1", "true", "yes", "on"
+}
 
 SESSION = requests.Session(impersonate="chrome120")
 SESSION.trust_env = False
@@ -63,42 +82,94 @@ SEASON_OVERRIDES: dict[int, int] = {
 }
 
 # ---------------------------------------------------------------------------
-# Helper HTTP avec ScrapingAnt (Passage à browser=true)
+# Helpers HTTP avec ScrapingAnt
 # ---------------------------------------------------------------------------
 
+def _target_headers_for_scrapingant() -> dict:
+    # ScrapingAnt ne transmet les headers cible que s'ils sont préfixés par Ant-.
+    return {f"Ant-{name}": value for name, value in HEADERS.items()}
+
+
+def _parse_json_response(resp, source_url: str) -> dict | None:
+    target_status = resp.headers.get("ant-page-status-code")
+    if target_status and target_status.isdigit() and int(target_status) >= 400:
+        print(f"[scraper] Cible HTTP {target_status} pour {source_url}")
+        return None
+
+    try:
+        return resp.json()
+    except Exception:
+        text = (resp.text or "").strip()
+        if not text:
+            return None
+
+        # En mode browser, les réponses JSON peuvent revenir dans un <pre>.
+        pre = re.search(r"<pre[^>]*>(.*?)</pre>", text, flags=re.IGNORECASE | re.DOTALL)
+        if pre:
+            text = html.unescape(pre.group(1)).strip()
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            snippet = text[:160].replace("\n", " ")
+            print(f"[scraper] Réponse non-JSON pour {source_url}: {snippet}")
+            return None
+
+
+def _get_via_scrapingant(url: str, retries: int) -> dict | None:
+    params = {
+        "x-api-key": SCRAPINGANT_KEY,
+        "url": url,
+        "browser": str(SCRAPINGANT_BROWSER).lower(),
+        "timeout": str(SCRAPINGANT_TIMEOUT),
+    }
+    if SCRAPINGANT_BROWSER and SCRAPINGANT_RETURN_PAGE_SOURCE:
+        params["return_page_source"] = "true"
+    if SCRAPINGANT_PROXY_TYPE:
+        params["proxy_type"] = SCRAPINGANT_PROXY_TYPE
+    if SCRAPINGANT_PROXY_COUNTRY:
+        params["proxy_country"] = SCRAPINGANT_PROXY_COUNTRY
+
+    for attempt in range(retries):
+        try:
+            resp = SESSION.get(
+                "https://api.scrapingant.com/v2/general",
+                params=params,
+                headers=_target_headers_for_scrapingant(),
+                timeout=SCRAPINGANT_TIMEOUT + 5,
+            )
+            if resp.status_code == 200:
+                data = _parse_json_response(resp, url)
+                if data and "detail" not in data:
+                    return data
+                if data and "detail" in data:
+                    print(f"[scraper] ScrapingAnt detail: {data['detail']}")
+            else:
+                print(f"[scraper] ScrapingAnt HTTP {resp.status_code} pour {url}: {resp.text[:120]}")
+        except Exception as exc:
+            print(f"[scraper] Erreur ScrapingAnt ({attempt + 1}/{retries}) : {exc}")
+        time.sleep(2 * (attempt + 1))
+    return None
+
+
 def _get(url: str, retries: int = 3) -> dict | None:
-    # Si ScrapingAnt est configuré, on l'utilise
     if SCRAPINGANT_KEY:
-        import urllib.parse
-        encoded_url = urllib.parse.quote(url)
-        ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
-        for attempt in range(retries):
-            try:
-                resp = SESSION.get(ant_url, timeout=20)
-                if resp.status_code == 200:
-                    try:
-                        return resp.json()
-                    except Exception:
-                        # Si ScrapingAnt renvoie du HTML au lieu de JSON
-                        print(f"[scraper] Réponse non-JSON reçue de ScrapingAnt pour {url}")
-                else:
-                    print(f"[scraper] ScrapingAnt HTTP {resp.status_code} pour {url}")
-            except Exception as exc:
-                print(f"[scraper] Erreur ScrapingAnt ({attempt+1}/{retries}) : {exc}")
-                time.sleep(2)
+        data = _get_via_scrapingant(url, retries)
+        if data is not None:
+            return data
 
     # Fallback Direct (curl_cffi passe le Cloudflare de Sofascore sans problème)
     for attempt in range(retries):
         try:
             resp = SESSION.get(url, headers=HEADERS, timeout=12)
             if resp.status_code == 200:
-                try:
-                    return resp.json()
-                except Exception:
-                    return None
+                return _parse_json_response(resp, url)
             elif resp.status_code == 404:
                 return None
+            elif resp.status_code in {403, 429}:
+                print(f"[scraper] Sofascore HTTP {resp.status_code} pour {url}")
         except Exception as exc:
+            print(f"[scraper] Erreur Sofascore directe ({attempt + 1}/{retries}) : {exc}")
             time.sleep(1)
             
     return None
@@ -121,6 +192,60 @@ def _get_current_season_id(tournament_id: int) -> int | None:
     seasons = data.get("seasons", [])
     return seasons[0]["id"] if seasons else None
 
+
+def _event_unique_tournament_id(event: dict) -> int | None:
+    tournament = event.get("tournament", {}) or {}
+    unique = tournament.get("uniqueTournament", {}) or {}
+    return unique.get("id") or tournament.get("id")
+
+
+def _event_to_match(event: dict, league_name: str, live: bool = False) -> dict | None:
+    try:
+        ts = event.get("startTimestamp", 0)
+        home = event["homeTeam"]
+        away = event["awayTeam"]
+        match = {
+            "league":       league_name,
+            "match_name":   f"{home['name']} vs {away['name']}",
+            "home_team_id": home["id"],
+            "away_team_id": away["id"],
+            "home_team":    home["name"],
+            "away_team":    away["name"],
+            "match_time":   datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%H:%M"),
+            "event_id":     event["id"],
+        }
+        if live:
+            status = event.get("status", {}) or {}
+            match.update({
+                "is_live": True,
+                "live_status": status.get("description") or status.get("type", "live"),
+                "home_score": event.get("homeScore", {}).get("current"),
+                "away_score": event.get("awayScore", {}).get("current"),
+            })
+        return match
+    except (KeyError, TypeError):
+        return None
+
+
+def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
+    data = _get(f"{BASE_URL}/sport/football/scheduled-events/{date_str}")
+    if data is None:
+        return None
+
+    matches = []
+    seen_event_ids = set()
+    for event in data.get("events", []):
+        league_name = LEAGUE_ID_TO_NAME.get(_event_unique_tournament_id(event))
+        if not league_name:
+            continue
+        match = _event_to_match(event, league_name)
+        if not match or match["event_id"] in seen_event_ids:
+            continue
+        seen_event_ids.add(match["event_id"])
+        matches.append(match)
+    return matches
+
+
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
     season_id = _get_current_season_id(tournament_id)
     if not season_id:
@@ -139,16 +264,9 @@ def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str
         if event_date != date_str:
             continue
 
-        matches.append({
-            "league":       league_name,
-            "match_name":   f"{event['homeTeam']['name']} vs {event['awayTeam']['name']}",
-            "home_team_id": event["homeTeam"]["id"],
-            "away_team_id": event["awayTeam"]["id"],
-            "home_team":    event["homeTeam"]["name"],
-            "away_team":    event["awayTeam"]["name"],
-            "match_time":   datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%H:%M"),
-            "event_id":     event["id"],
-        })
+        match = _event_to_match(event, league_name)
+        if match:
+            matches.append(match)
     return matches
 
 
@@ -157,6 +275,17 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
         date_str = datetime.date.today().isoformat()
 
     print(f"[scraper] Récupération des matchs pour le {date_str}…")
+
+    scheduled_matches = _fetch_scheduled_matches(date_str)
+    if scheduled_matches is not None:
+        for league_name in LEAGUE_IDS:
+            count = sum(1 for match in scheduled_matches if match["league"] == league_name)
+            if count:
+                print(f"[scraper]   {league_name}: {count} match(s)")
+        print(f"[scraper] ✅ {len(scheduled_matches)} match(s) total pour le {date_str}")
+        return scheduled_matches
+
+    print("[scraper] Fallback par ligue : scheduled-events indisponible.")
     all_matches = []
     for league_name, tid in LEAGUE_IDS.items():
         matches = fetch_matches_for_league(league_name, tid, date_str)
@@ -169,7 +298,23 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
 
 def fetch_inplay_matches() -> list[dict]:
-    return []
+    data = _get(f"{BASE_URL}/sport/football/events/live")
+    if not data:
+        return []
+
+    matches = []
+    seen_event_ids = set()
+    for event in data.get("events", []):
+        league_name = LEAGUE_ID_TO_NAME.get(_event_unique_tournament_id(event))
+        if not league_name:
+            continue
+        match = _event_to_match(event, league_name, live=True)
+        if not match or match["event_id"] in seen_event_ids:
+            continue
+        seen_event_ids.add(match["event_id"])
+        matches.append(match)
+    print(f"[scraper] ✅ {len(matches)} match(s) live ciblé(s)")
+    return matches
 
 # ---------------------------------------------------------------------------
 # Calcul des features pour XGBoost

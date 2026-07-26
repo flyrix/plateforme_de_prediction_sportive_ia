@@ -21,6 +21,11 @@ const LEAGUE_FLAGS = {
   "Veikkausliiga":   "🇫🇮",
   "Eliteserien":     "🇳🇴",
   "MLS":             "🇺🇸",
+  "USL Championship": "🇺🇸",
+  "USL League One":   "🇺🇸",
+  "USL League Two":   "🇺🇸",
+  "NPSL":             "🇺🇸",
+  "NPSL Founders Cup": "🇺🇸",
   "Serie A Brasil":  "🇧🇷",
   "Club Friendlies": "🤝",
 };
@@ -114,34 +119,39 @@ function renderCoupons() {
 
 // ── Card HTML ─────────────────────────────────────────────
 function couponCard(c) {
-  const pct      = Math.round(c.confidence_rate * 100);
+  const confidence = Number(c.confidence_rate) || 0;
+  const pct      = Math.round(confidence * 100);
   const isHigh   = pct >= 70;
   const tierClass = isHigh ? "tier-high" : "tier-mid";
   const pctClass  = isHigh ? "high"      : "mid";
   const barClass  = isHigh ? ""          : "mid";
   const flag      = LEAGUE_FLAGS[c.league] || "⚽";
+  const statusText = typeof c.status === "string" ? c.status : "En attente";
+  const score = Number.isFinite(Number(c.home_score)) && Number.isFinite(Number(c.away_score))
+    ? ` ${Number(c.home_score)}-${Number(c.away_score)}`
+    : "";
 
-  // Check if the match status indicates it's currently live
-  const isLive = c.status && typeof c.status === 'object' && c.status.type !== 'finished';
-  const liveBadge = isLive ? '<span class="live-badge">🔴 LIVE</span>' : '';
+  const isLive = Boolean(c.is_live);
+  const liveBadge = isLive ? `<span class="live-badge">🔴 LIVE${score}</span>` : "";
 
   const statusClass = {
     "En attente": "attente",
     "Gagné":      "gagne",
     "Perdu":      "perdu",
-  }[c.status] || "attente";
+    "Annulé":     "annule",
+  }[statusText] || "attente";
 
   return `
   <div class="coupon-card ${tierClass}">
     <div class="coupon-header">
-      <span class="league-badge">${flag} ${c.league}</span>
-      <span class="match-time">${liveBadge || c.match_time || "--:--"}</span>
+      <span class="league-badge">${flag} ${escapeHtml(c.league || "")}</span>
+      <span class="match-time">${liveBadge || escapeHtml(c.match_time || "--:--")}</span>
     </div>
   
     <div class="teams-row">
-      <span class="team-name home">${c.home_team}</span>
+      <span class="team-name home">${escapeHtml(c.home_team || "")}</span>
       <span class="vs-label">VS</span>
-      <span class="team-name away">${c.away_team}</span>
+      <span class="team-name away">${escapeHtml(c.away_team || "")}</span>
     </div>
 
     <div class="coupon-divider"></div>
@@ -149,8 +159,8 @@ function couponCard(c) {
     <div class="prediction-row">
       <div>
         <div class="prediction-label">Pari recommandé</div>
-        <div class="prediction-type">${c.prediction_type}</div>
-        <span class="status-badge ${statusClass}">${c.status}</span>
+        <div class="prediction-type">${escapeHtml(c.prediction_type || "")}</div>
+        <span class="status-badge ${statusClass}">${escapeHtml(statusText)}</span>
       </div>
       <div class="confidence-block">
         <div class="confidence-pct ${pctClass}">${pct}<span style="font-size:13px;font-weight:400">%</span></div>
@@ -160,6 +170,16 @@ function couponCard(c) {
       </div>
     </div>
   </div>`;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, char => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[char]));
 }
 
 // ── Stats ─────────────────────────────────────────────────

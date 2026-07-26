@@ -318,6 +318,7 @@ body {
 .status-badge.attente  { background: rgba(138,143,168,0.12); color: var(--text-secondary); }
 .status-badge.gagne    { background: rgba(0,212,170,0.12);   color: var(--accent); }
 .status-badge.perdu    { background: rgba(255,77,109,0.12);  color: var(--danger); }
+.status-badge.annule   { background: rgba(255,159,67,0.12);  color: var(--warn); }
 
 /* ── FOOTER ── */
 .footer {

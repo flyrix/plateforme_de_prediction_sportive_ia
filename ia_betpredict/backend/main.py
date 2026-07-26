@@ -51,6 +51,9 @@ app.add_middleware(
 
 # Clé secrète pour protéger le endpoint /run-daily-job
 _CRON_SECRET = os.environ.get("CRON_SECRET", "")
+_ALLOW_UNAUTHENTICATED_ADMIN = os.environ.get("ALLOW_UNAUTHENTICATED_ADMIN", "").lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 # ---------------------------------------------------------------------------
@@ -122,8 +125,15 @@ async def daily_prediction_job():
 # ---------------------------------------------------------------------------
 
 def _verify_cron_secret(provided: str | None) -> None:
-    """Vérifie le header X-Cron-Secret. Bloque si CRON_SECRET est défini en prod."""
-    if _CRON_SECRET and provided != _CRON_SECRET:
+    """Vérifie le header X-Cron-Secret pour les routes admin."""
+    if not _CRON_SECRET:
+        if _ALLOW_UNAUTHENTICATED_ADMIN:
+            return
+        raise HTTPException(
+            status_code=503,
+            detail="CRON_SECRET non configuré : endpoint admin désactivé.",
+        )
+    if provided != _CRON_SECRET:
         raise HTTPException(status_code=401, detail="Non autorisé : X-Cron-Secret invalide.")
 
 
@@ -170,6 +180,13 @@ async def get_live_predictions():
             match["features"] = compute_features(match)
             # 2. Generate prediction coupons using your trained .pkl models
             coupons = generate_coupons(match)
+            for coupon in coupons:
+                coupon.update({
+                    "is_live": True,
+                    "live_status": match.get("live_status"),
+                    "home_score": match.get("home_score"),
+                    "away_score": match.get("away_score"),
+                })
             all_coupons.extend(coupons)
             
         return {"date": datetime.date.today().isoformat(), "count": len(all_coupons), "coupons": all_coupons}

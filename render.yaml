@@ -9,6 +9,15 @@ services:
       - key: CRON_SECRET
         sync: false
       - key: ALLOWED_ORIGINS
-        value: "*"
         sync: false
+      - key: SCRAPINGANT_KEY
+        sync: false
+      - key: SCRAPINGANT_BROWSER
+        value: "false"
+      - key: SCRAPINGANT_PROXY_TYPE
+        value: "datacenter"
+      - key: SCRAPINGANT_PROXY_COUNTRY
+        sync: false
+      - key: SCRAPINGANT_TIMEOUT
+        value: "25"
     autoDeploy: true

@@ -17,8 +17,7 @@ CREATE TABLE IF NOT EXISTS predictions_history (
     confidence_rate  NUMERIC(5, 4) NOT NULL,
     status           TEXT          NOT NULL DEFAULT 'En attente',
     CONSTRAINT predictions_history_status_check
-        CHECK (status = ANY (ARRAY['En attente'::text, 'Gagné'::text, 'Perdu'::text, 'Annulé'::text])),
-    CONSTRAINT predictions_history_pkey PRIMARY KEY (id)
+        CHECK (status = ANY (ARRAY['En attente'::text, 'Gagné'::text, 'Perdu'::text, 'Annulé'::text]))
 );
 
 -- Index pour accélérer les requêtes par date

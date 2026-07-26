@@ -23,11 +23,9 @@ import os
 import warnings
 import joblib
 import pandas as pd
-import numpy as np
-from xgboost import XGBClassifier, XGBRegressor
+from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, mean_absolute_error
-from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score
 
 warnings.filterwarnings("ignore")
 
@@ -74,12 +72,18 @@ def train_group(df: pd.DataFrame, group_name: str, label: str):
 
     X = df[FEATURE_COLS].copy()
 
-    # ── model_winner (Double Chance) ──────────────────────────────────────
-    # Cible : 0=1X (home win ou draw), 1=X2 (away win ou draw), 2=home win seul
-    # On simplifie : 0 = home gagne ou nul, 1 = away gagne ou nul
-    y_dc = df["dc_1x"]  # binaire : 1 si 1X, 0 sinon
+    # ── model_winner (résultat 1N2, puis Double Chance en prédiction) ──────
+    # Cible : 0=domicile, 1=nul, 2=extérieur.
+    # En prod : 1X = P(0)+P(1), X2 = P(1)+P(2)
+    y_dc = df["result"]
     X_tr, X_te, y_tr, y_te = train_test_split(X, y_dc, test_size=0.2, random_state=42)
-    model_dc = XGBClassifier(**XGB_PARAMS)
+    winner_params = {
+        **XGB_PARAMS,
+        "objective": "multi:softprob",
+        "num_class": 3,
+        "eval_metric": "mlogloss",
+    }
+    model_dc = XGBClassifier(**winner_params)
     model_dc.fit(X_tr, y_tr, eval_set=[(X_te, y_te)], verbose=False)
     acc = accuracy_score(y_te, model_dc.predict(X_te))
     print(f"  model_winner  → accuracy={acc:.3f} ({len(X_tr)} train / {len(X_te)} test)")
