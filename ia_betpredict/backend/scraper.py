@@ -1,7 +1,7 @@
 """
 scraper.py
 ----------
-Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore + ScraperAPI.
+Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore + ScrapingAnt.
 """
 
 import datetime
@@ -26,12 +26,22 @@ LEAGUE_IDS = {
     "NPSL":                13450,  # USA
     "NPSL Founders Cup":   13742,  # USA
     "Club Friendlies":     853,    # Matchs amicaux
-    
+}
+
+# 👈 PLACEMENT DE SEASON_OVERRIDES
+# Coder en dur les IDs de saison évite d'appeler l'endpoint /seasons et économise vos crédits API.
+SEASON_OVERRIDES: dict[int, int] = {
+    41: 61858,     # Veikkausliiga
+    20: 61582,     # Eliteserien
+    242: 67388,    # MLS
+    325: 67345,    # Serie A Brasil
+    13363: 67400,  # USL Championship
+    13362: 67401,  # USL League One
+    13546: 67402,  # USL League Two
+    853: 68000,    # Club Friendlies
 }
 
 FORM_WINDOW = 5
-SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
-
 SESSION = requests.Session(impersonate="chrome120")
 SESSION.trust_env = False
 
@@ -44,28 +54,27 @@ HEADERS = {
 }
 
 # ---------------------------------------------------------------------------
-# Helper HTTP avec ScraperAPI
+# Helper HTTP avec ScrapingAnt
 # ---------------------------------------------------------------------------
 
+SCRAPINGANT_KEY = os.getenv("SCRAPINGANT_KEY", "").strip()
+
 def _get(url: str, retries: int = 3) -> dict | None:
-    if SCRAPER_API_KEY:
-        payload = {
-            'api_key': SCRAPER_API_KEY,
-            'url': url,
-            'keep_headers': 'true',
-        }
+    if SCRAPINGANT_KEY:
+        import urllib.parse
+        encoded_url = urllib.parse.quote(url)
+        ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
         for attempt in range(retries):
             try:
-                resp = SESSION.get('https://api.scraperapi.com', params=payload, headers=HEADERS, timeout=25)
+                resp = SESSION.get(ant_url, timeout=20)
                 if resp.status_code == 200:
                     return resp.json()
-                print(f"[scraper] ScraperAPI Status {resp.status_code} pour {url}")
             except Exception as exc:
-                print(f"[scraper] Erreur réseau ({attempt+1}/{retries}) : {exc}")
+                print(f"[scraper] Erreur ScrapingAnt ({attempt+1}/{retries}) : {exc}")
                 time.sleep(2)
         return None
 
-    # Fallback si exécuté en local sans clé ScraperAPI
+    # Fallback si exécuté en local sans clé API
     for attempt in range(retries):
         try:
             resp = SESSION.get(url, headers=HEADERS, timeout=10)
@@ -80,6 +89,11 @@ def _get(url: str, retries: int = 3) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def _get_current_season_id(tournament_id: int) -> int | None:
+    # 👈 UTILISATION DE SEASON_OVERRIDES :
+    # Si l'ID de saison est déjà défini dans le dictionnaire, on l'utilise directement !
+    if tournament_id in SEASON_OVERRIDES:
+        return SEASON_OVERRIDES[tournament_id]
+
     data = _get(f"{BASE_URL}/unique-tournament/{tournament_id}/seasons")
     if not data:
         return None
@@ -182,8 +196,7 @@ def _get_team_features(team_id: int) -> dict:
 
 
 def _get_h2h_features(home_id: int, away_id: int) -> dict:
-    # 👈 URL exacte corrigée : /event/h2h/custom/{home_id}/{away_id}
-    data = _get(f"{BASE_URL}/event/h2h/custom/{home_id}/{away_id}")
+    data = _get(f"{BASE_URL}/event/h2h/custom/{home_id}/{away_id}", retries=1)
     default = {"h2h_over25_rate": 0.50, "h2h_btts_rate": 0.45}
     if not data:
         return default
