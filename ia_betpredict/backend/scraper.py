@@ -89,17 +89,16 @@ def _get(url: str, retries: int = 3) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def _get_current_season_id(tournament_id: int) -> int | None:
-    # 👈 UTILISATION DE SEASON_OVERRIDES :
-    # Si l'ID de saison est déjà défini dans le dictionnaire, on l'utilise directement !
+    # 1. Vérifier si l'ID de la saison est déjà défini en dur (Court-circuite l'appel HTTP)
     if tournament_id in SEASON_OVERRIDES:
         return SEASON_OVERRIDES[tournament_id]
 
+    # 2. Requête API uniquement si l'override n'est pas disponible
     data = _get(f"{BASE_URL}/unique-tournament/{tournament_id}/seasons")
     if not data:
         return None
     seasons = data.get("seasons", [])
     return seasons[0]["id"] if seasons else None
-
 
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
     season_id = _get_current_season_id(tournament_id)
