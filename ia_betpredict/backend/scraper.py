@@ -26,7 +26,7 @@ LEAGUE_IDS = {
     "NPSL":                13450,  # USA
     "NPSL Founders Cup":   13742,  # USA
     "Club Friendlies":     853,    # Matchs amicaux
-    "Women Club Friendlies": 24932,
+    
 }
 
 FORM_WINDOW = 5
