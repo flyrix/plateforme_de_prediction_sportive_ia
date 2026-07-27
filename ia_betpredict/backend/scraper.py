@@ -1,16 +1,12 @@
 """
 scraper.py
 ----------
-Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore
-en passant par le service ScraperAPI de manière OPTIMISÉE (économique en crédits).
+Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore + ScraperAPI.
+Optimisé pour réduire au maximum la consommation de crédits ScraperAPI et éviter les timeouts.
 """
 
 import datetime
-import html
-import json
 import os
-import random
-import re
 import time
 from urllib.parse import quote
 from curl_cffi import requests
@@ -20,7 +16,6 @@ from curl_cffi import requests
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://api.sofascore.com/api/v1"
-SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
 LEAGUE_IDS = {
     "Veikkausliiga":         41,     # Finlande
@@ -33,12 +28,12 @@ LEAGUE_IDS = {
     "NPSL":                  13450,  # USA
     "NPSL Founders Cup":     13742,  # USA
     "Club Friendlies":       853,    # Matchs amicaux
-    
+    "Women Club Friendlies": 24932,
 }
+
 LEAGUE_ID_TO_NAME = {tid: name for name, tid in LEAGUE_IDS.items()}
 
-FORM_WINDOW = 5
-
+# ID de saison en dur pour ÉVITER 1 appel API inutile par ligue
 SEASON_OVERRIDES: dict[int, int] = {
     41: 61858,
     20: 61582,
@@ -50,69 +45,70 @@ SEASON_OVERRIDES: dict[int, int] = {
     13450: 67403,
     13742: 67404,
     853: 68000,
-   
+    24932: 68001,
 }
+
+FORM_WINDOW = 5
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
 
 SESSION = requests.Session(impersonate="chrome120")
 SESSION.trust_env = False
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "*/*",
-    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Origin": "https://www.sofascore.com",
     "Referer": "https://www.sofascore.com/",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
-# Cache en mémoire pour éviter les requêtes HTTP redondantes durant la même exécution
+# Cache mémoire pour éviter de payer 2 fois la même URL durant le même job
 CACHE = {}
 
 # ---------------------------------------------------------------------------
-# Helper HTTP via ScraperAPI (avec Caching)
+# Helper HTTP avec ScraperAPI Optimisé (Coût = 1 Crédit / requete)
 # ---------------------------------------------------------------------------
 
 def _get(url: str, retries: int = 2) -> dict | None:
-    """Effectue une requête GET via ScraperAPI en vérifiant d'abord le cache."""
-    
+    """Effectue une requête GET via ScraperAPI avec caching et consommation minimale."""
     if url in CACHE:
         return CACHE[url]
 
-    if SCRAPERAPI_KEY:
-        # Ajout de render=false et ultra_premium=false pour des réponses rapides en JSON brut
+    if SCRAPER_API_KEY:
+        # render=false et ultra_premium désactivé pour consommer exactement 1 crédit par appel
         target_url = (
             f"http://api.scraperapi.com?"
-            f"api_key={SCRAPERAPI_KEY}"
+            f"api_key={SCRAPER_API_KEY}"
             f"&url={quote(url)}"
             f"&keep_headers=true"
             f"&render=false"
         )
-    else:
-        target_url = url
-
-    for attempt in range(retries):
-        try:
-            # Timeout réduit à 8 secondes pour ne pas bloquer les Cron Jobs Vercel
-            resp = SESSION.get(target_url, headers=HEADERS, timeout=8)
-            
-            if resp.status_code == 200:
-                try:
+        for attempt in range(retries):
+            try:
+                resp = SESSION.get(target_url, headers=HEADERS, timeout=10)
+                if resp.status_code == 200:
                     data = resp.json()
                     CACHE[url] = data
                     return data
-                except Exception:
+                elif resp.status_code == 404:
+                    CACHE[url] = None
                     return None
+            except Exception as exc:
+                time.sleep(0.5)
+        return None
+
+    # Fallback si exécuté en local sans clé ScraperAPI
+    for attempt in range(retries):
+        try:
+            resp = SESSION.get(url, headers=HEADERS, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                CACHE[url] = data
+                return data
             elif resp.status_code == 404:
                 CACHE[url] = None
                 return None
-            
-            print(f"[scraper] Sofascore HTTP {resp.status_code} pour {url}")
-            if resp.status_code in {403, 429}:
-                time.sleep(1)
-                
-        except Exception as exc:
-            print(f"[scraper] Erreur ScraperAPI ({attempt + 1}/{retries}) : {exc}")
+        except Exception:
             time.sleep(0.5)
-            
     return None
 
 # ---------------------------------------------------------------------------
@@ -165,6 +161,7 @@ def _event_to_match(event: dict, league_name: str, live: bool = False) -> dict |
 
 
 def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
+    """Tente de récupérer TOUS les matchs du jour en 1 seule requête globale."""
     data = _get(f"{BASE_URL}/sport/football/scheduled-events/{date_str}")
     if data is None:
         return None
@@ -212,16 +209,18 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
     print(f"[scraper] Récupération des matchs pour le {date_str}…")
 
+    # 1. Tentative d'économie maximale : 1 seule requête globale
     scheduled_matches = _fetch_scheduled_matches(date_str)
     if scheduled_matches is not None:
         for league_name in LEAGUE_IDS:
             count = sum(1 for match in scheduled_matches if match["league"] == league_name)
             if count:
                 print(f"[scraper]   {league_name}: {count} match(s)")
-        print(f"[scraper] ✅ {len(scheduled_matches)} match(s) total pour le {date_str}")
+        print(f"[scraper] ✅ {len(scheduled_matches)} match(s) total (Via Global Request)")
         return scheduled_matches
 
-    print("[scraper] Fallback par ligue : scheduled-events indisponible.")
+    # 2. Fallback par ligue si la requête globale a échoué
+    print("[scraper] Fallback par ligue en cours…")
     all_matches = []
     for league_name, tid in LEAGUE_IDS.items():
         matches = fetch_matches_for_league(league_name, tid, date_str)
@@ -234,7 +233,6 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
 
 def fetch_inplay_matches() -> list[dict]:
-    """Récupère tous les matchs actuellement en cours (Live)."""
     data = _get(f"{BASE_URL}/sport/football/events/live")
     if not data:
         return []
@@ -250,6 +248,7 @@ def fetch_inplay_matches() -> list[dict]:
             continue
         seen_event_ids.add(match["event_id"])
         matches.append(match)
+        
     print(f"[scraper] ✅ {len(matches)} match(s) live ciblé(s)")
     return matches
 
@@ -276,8 +275,7 @@ def _get_team_features(team_id: int) -> dict:
         aws = ev.get("awayScore", {}).get("current", 0) or 0
         ts  = ev.get("startTimestamp", 0)
         gf, ga = (hs, aws) if ht_id == team_id else (aws, hs)
-        scored.append(gf)
-        conceded.append(ga)
+        scored.append(gf); conceded.append(ga)
         btts_l.append(1 if gf > 0 and ga > 0 else 0)
         over25_l.append(1 if gf + ga > 2.5 else 0)
         dates.append(ts)
@@ -322,12 +320,20 @@ def _get_h2h_features(home_id: int, away_id: int) -> dict:
 
 
 def compute_features(match: dict) -> dict:
-    hf  = _get_team_features(match["home_team_id"])
-    af  = _get_team_features(match["away_team_id"])
-    h2h = _get_h2h_features(match["home_team_id"], match["away_team_id"])
+    hf = _get_team_features(match["home_team_id"])
+    af = _get_team_features(match["away_team_id"])
+
+    # 💡 ÉCONOMIE DE CRÉDITS : On désactive le H2H uniquement pour les matchs amicaux
+    is_friendly = match["league"] in ["Club Friendlies", "Women Club Friendlies"]
+    
+    if not is_friendly:
+        h2h = _get_h2h_features(match["home_team_id"], match["away_team_id"])
+    else:
+        # Valeur par défaut instantanée sans appel API (0 crédit consommé)
+        h2h = {"h2h_over25_rate": 0.50, "h2h_btts_rate": 0.45}
 
     from predictor import COUNTRY_ENCODING
-    is_neutral = 1 if match["league"] in ["Club Friendlies", "Women Club Friendlies"] else 0
+    is_neutral = 1 if is_friendly else 0
 
     return {
         "home_goals_exp":    hf["avg_scored"],
@@ -357,7 +363,7 @@ def fetch_matches_with_features(date_str: str | None = None) -> list[dict]:
     matches = fetch_all_matches(date_str)
     if not matches:
         return []
-        
+
     for match in matches:
         match["features"] = compute_features(match)
     return matches
