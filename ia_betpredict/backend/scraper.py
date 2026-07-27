@@ -2,7 +2,7 @@
 scraper.py
 ----------
 Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore
-en utilisant curl_cffi avec une empreinte Chrome complète.
+en passant par le service ScraperAPI de manière OPTIMISÉE (économique en crédits).
 """
 
 import datetime
@@ -12,6 +12,7 @@ import os
 import random
 import re
 import time
+from urllib.parse import quote
 from curl_cffi import requests
 
 # ---------------------------------------------------------------------------
@@ -19,6 +20,7 @@ from curl_cffi import requests
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://api.sofascore.com/api/v1"
+SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
 LEAGUE_IDS = {
     "Veikkausliiga":         41,     # Finlande
@@ -37,70 +39,76 @@ LEAGUE_ID_TO_NAME = {tid: name for name, tid in LEAGUE_IDS.items()}
 
 FORM_WINDOW = 5
 
-# Dictionnaire des ID de saisons pour éviter tout appel HTTP vers /seasons
 SEASON_OVERRIDES: dict[int, int] = {
-    41: 61858,     # Veikkausliiga
-    20: 61582,     # Eliteserien
-    242: 67388,    # MLS
-    325: 67345,    # Serie A Brasil
-    13363: 67400,  # USL Championship
-    13362: 67401,  # USL League One
-    13546: 67402,  # USL League Two
-    13450: 67403,  # NPSL
-    13742: 67404,  # NPSL Founders Cup
-    853: 68000,    # Club Friendlies
-    24932: 68001,  # Women Club Friendlies
+    41: 61858,
+    20: 61582,
+    242: 67388,
+    325: 67345,
+    13363: 67400,
+    13362: 67401,
+    13546: 67402,
+    13450: 67403,
+    13742: 67404,
+    853: 68000,
+    24932: 68001,
 }
 
-# Session HTTP avec empreinte TLS Chrome
 SESSION = requests.Session(impersonate="chrome120")
 SESSION.trust_env = False
 
-# Headers HTTP complets imitant un navigateur réel
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "*/*",
     "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Cache-Control": "max-age=0",
     "Origin": "https://www.sofascore.com",
     "Referer": "https://www.sofascore.com/",
-    "Sec-Ch-Ua": '"Not-A.Brand";v="99", "Chromium";v="124", "Google Chrome";v="124"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site",
 }
 
+# 💡 OPTIMISATION 1 : Dictionnaire de cache en mémoire pour éviter les requêtes doublons
+CACHE = {}
+
 # ---------------------------------------------------------------------------
-# Helper HTTP direct (Exécution réseau)
+# Helper HTTP via ScraperAPI (avec Caching)
 # ---------------------------------------------------------------------------
 
-def _get(url: str, retries: int = 3) -> dict | None:
-    """Effectue une requête GET directe vers l'API Sofascore via curl_cffi."""
+def _get(url: str, retries: int = 2) -> dict | None:
+    """Effectue une requête GET via ScraperAPI en vérifiant d'abord le cache."""
+    
+    # Si l'URL a déjà été appelée pendant ce job Vercel, on renvoie la réponse mise en cache !
+    if url in CACHE:
+        return CACHE[url]
+
+    if SCRAPERAPI_KEY:
+        target_url = (
+            f"http://api.scraperapi.com?"
+            f"api_key={SCRAPERAPI_KEY}"
+            f"&url={quote(url)}"
+            f"&keep_headers=true"
+        )
+    else:
+        target_url = url
+
     for attempt in range(retries):
         try:
-            # Légère temporisation aléatoire pour simuler un comportement humain
-            time.sleep(random.uniform(0.2, 0.5))
-            
-            resp = SESSION.get(url, headers=HEADERS, timeout=12)
+            resp = SESSION.get(target_url, headers=HEADERS, timeout=20)
             
             if resp.status_code == 200:
                 try:
-                    return resp.json()
+                    data = resp.json()
+                    CACHE[url] = data  # Sauvegarde dans le cache
+                    return data
                 except Exception:
-                    print(f"[scraper] Réponse non-JSON reçue pour {url}")
                     return None
             elif resp.status_code == 404:
+                CACHE[url] = None
                 return None
             
             print(f"[scraper] Sofascore HTTP {resp.status_code} pour {url}")
-            
             if resp.status_code in {403, 429}:
-                time.sleep(2 * (attempt + 1))
+                time.sleep(1.5 * (attempt + 1))
                 
         except Exception as exc:
-            print(f"[scraper] Erreur Sofascore directe ({attempt + 1}/{retries}) : {exc}")
+            print(f"[scraper] Erreur ScraperAPI ({attempt + 1}/{retries}) : {exc}")
             time.sleep(1)
             
     return None
@@ -176,7 +184,6 @@ def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
     season_id = _get_current_season_id(tournament_id)
     if not season_id:
-        print(f"[scraper] ⚠️ Saison introuvable pour {league_name}")
         return []
 
     data = _get(f"{BASE_URL}/unique-tournament/{tournament_id}/season/{season_id}/events/next/0")
@@ -216,32 +223,12 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
     all_matches = []
     for league_name, tid in LEAGUE_IDS.items():
         matches = fetch_matches_for_league(league_name, tid, date_str)
-        print(f"[scraper]   {league_name}: {len(matches)} match(s)")
-        all_matches.extend(matches)
-        time.sleep(0.5)
+        if matches:
+            print(f"[scraper]   {league_name}: {len(matches)} match(s)")
+            all_matches.extend(matches)
 
     print(f"[scraper] ✅ {len(all_matches)} match(s) total pour le {date_str}")
     return all_matches
-
-
-def fetch_inplay_matches() -> list[dict]:
-    data = _get(f"{BASE_URL}/sport/football/events/live")
-    if not data:
-        return []
-
-    matches = []
-    seen_event_ids = set()
-    for event in data.get("events", []):
-        league_name = LEAGUE_ID_TO_NAME.get(_event_unique_tournament_id(event))
-        if not league_name:
-            continue
-        match = _event_to_match(event, league_name, live=True)
-        if not match or match["event_id"] in seen_event_ids:
-            continue
-        seen_event_ids.add(match["event_id"])
-        matches.append(match)
-    print(f"[scraper] ✅ {len(matches)} match(s) live ciblé(s)")
-    return matches
 
 # ---------------------------------------------------------------------------
 # Calcul des features pour XGBoost
@@ -345,6 +332,10 @@ def compute_features(match: dict) -> dict:
 
 def fetch_matches_with_features(date_str: str | None = None) -> list[dict]:
     matches = fetch_all_matches(date_str)
+    # 💡 OPTIMISATION 2 : S'il n'y a aucun match, on évite tout appel inutile vers les features
+    if not matches:
+        return []
+        
     for match in matches:
         match["features"] = compute_features(match)
     return matches
