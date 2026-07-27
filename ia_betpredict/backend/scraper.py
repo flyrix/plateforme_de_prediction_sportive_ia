@@ -78,18 +78,21 @@ def _get(url: str, retries: int = 2) -> dict | None:
         return CACHE[url]
 
     if SCRAPERAPI_KEY:
+        # Ajout de render=false et ultra_premium=false pour des réponses rapides en JSON brut
         target_url = (
             f"http://api.scraperapi.com?"
             f"api_key={SCRAPERAPI_KEY}"
             f"&url={quote(url)}"
             f"&keep_headers=true"
+            f"&render=false"
         )
     else:
         target_url = url
 
     for attempt in range(retries):
         try:
-            resp = SESSION.get(target_url, headers=HEADERS, timeout=20)
+            # Timeout réduit à 8 secondes pour ne pas bloquer les Cron Jobs Vercel
+            resp = SESSION.get(target_url, headers=HEADERS, timeout=8)
             
             if resp.status_code == 200:
                 try:
@@ -104,11 +107,11 @@ def _get(url: str, retries: int = 2) -> dict | None:
             
             print(f"[scraper] Sofascore HTTP {resp.status_code} pour {url}")
             if resp.status_code in {403, 429}:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(1)
                 
         except Exception as exc:
             print(f"[scraper] Erreur ScraperAPI ({attempt + 1}/{retries}) : {exc}")
-            time.sleep(1)
+            time.sleep(0.5)
             
     return None
 
