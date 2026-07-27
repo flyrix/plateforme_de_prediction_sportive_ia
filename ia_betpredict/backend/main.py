@@ -30,17 +30,15 @@ from db import execute
 
 app = FastAPI(
     title="IA-BetPredict API",
-    description="Prédictions sportives par XGBoost sur 4 ligues d'été",
+    description="Prédictions sportives par XGBoost sur ligues cibles",
     version="1.0.0",
 )
 
 # Restreindre les origines CORS en production via la variable ALLOWED_ORIGINS
-# Ex : ALLOWED_ORIGINS="https://ia-betpredict.vercel.app"
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*")
 _CORS_ORIGINS = [origin.strip() for origin in _allowed_origins.split(",") if origin.strip()]
 if not _CORS_ORIGINS:
     _CORS_ORIGINS = ["*"]
-print(f"[main] CORS origins: {_CORS_ORIGINS}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,75 +47,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Clé secrète pour protéger le endpoint /run-daily-job
+# Clé secrète pour protéger les endpoints admin
 _CRON_SECRET = os.environ.get("CRON_SECRET", "")
 _ALLOW_UNAUTHENTICATED_ADMIN = os.environ.get("ALLOW_UNAUTHENTICATED_ADMIN", "").lower() in {
     "1", "true", "yes", "on"
 }
-
-
-# ---------------------------------------------------------------------------
-# Le Job Quotidien (Anciennement dans scheduler.py)
-# ---------------------------------------------------------------------------
-
-async def daily_prediction_job():
-    """Exécute le cycle complet : Scraping -> Prédiction -> Sauvegarde Neon"""
-    today = datetime.date.today().isoformat()
-    print(f"\n[Vercel Cron] ▶ Lancement du job — {today}")
-
-    try:
-        matches = fetch_matches_with_features(today)
-    except Exception as exc:
-        print(f"[Vercel Cron] ❌ Erreur scraping : {exc}")
-        raise exc
-
-    if not matches:
-        print("[Vercel Cron] Aucun match trouvé pour aujourd'hui.")
-        return
-
-    all_coupons = []
-    for match in matches:
-        try:
-            coupons = generate_coupons(match)
-            all_coupons.extend(coupons)
-        except Exception as exc:
-            print(f"[Vercel Cron] ⚠️ Erreur prédiction {match['match_name']} : {exc}")
-
-    if not all_coupons:
-        print("[Vercel Cron] Aucun coupon éligible généré.")
-        return
-
-    sql = """
-        INSERT INTO predictions_history
-            (match_date, match_name, league, home_team, away_team,
-             match_time, prediction_type, confidence_rate, status)
-        VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (match_date, match_name, prediction_type) DO NOTHING
-    """
-    inserted = 0
-    skipped = 0
-    for c in all_coupons:
-        try:
-            rows = execute(sql, (
-                today,
-                c["match_name"],
-                c["league"],
-                c["home_team"],
-                c["away_team"],
-                c.get("match_time", ""),
-                c["prediction_type"],
-                c["confidence_rate"],
-                c["status"],
-            ))
-            if rows:
-                inserted += 1
-            else:
-                skipped += 1
-        except Exception as exc:
-            print(f"[Vercel Cron] ⚠️ Erreur insertion {c['match_name']} : {exc}")
-
-    print(f"[Vercel Cron] ✅ {inserted} coupon(s) insérés, {skipped} doublon(s) ignorés")
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +99,17 @@ def _fetch_coupons(match_date: str, league: str | None, min_confidence: float) -
 
 @app.get("/", tags=["Health"])
 async def root():
-    return {"status": "ok", "message": "IA-BetPredict API is running on Vercel/Render"}
+    return {"status": "ok", "message": "IA-BetPredict API is running"}
+
+
+@app.post("/run-daily-job", tags=["Admin"])
+async def run_daily_job():
+    """Endpoint désactivé sur Vercel pour économiser les ressources et éviter les timeouts.
+    L'exécution quotidienne est désormais gérée par GitHub Actions."""
+    return {
+        "status": "disabled",
+        "message": "Cet endpoint est désactivé sur Vercel. Le job doit être exécuté via GitHub Actions."
+    }
 
 
 @app.get("/predictions/live", tags=["Predictions"])
@@ -176,9 +120,7 @@ async def get_live_predictions():
         all_coupons = []
         
         for match in matches:
-            # 1. Compute features dynamically for the live match
             match["features"] = compute_features(match)
-            # 2. Generate prediction coupons using your trained .pkl models
             coupons = generate_coupons(match)
             for coupon in coupons:
                 coupon.update({
@@ -225,8 +167,6 @@ async def update_coupon_status(
 ):
     """
     Met à jour le statut d'un coupon (Gagné / Perdu / En attente / Annulé).
-    coupon_id est un UUID (correspond à la colonne id de Neon).
-    Protégé par le même CRON_SECRET que le job quotidien.
     """
     _verify_cron_secret(x_cron_secret)
     sql = "UPDATE predictions_history SET status = %s WHERE id = %s::uuid"
@@ -234,18 +174,6 @@ async def update_coupon_status(
     if not updated:
         raise HTTPException(status_code=404, detail=f"Coupon {coupon_id} introuvable.")
     return {"status": "ok", "coupon_id": coupon_id, "new_status": status}
-
-
-@app.post("/run-daily-job", tags=["Admin / Vercel Cron"])
-async def run_daily_job(x_cron_secret: str | None = Header(default=None)):
-    """Déclenché par le Vercel Cron toutes les nuits à 00:00 UTC.
-    Protégé par le header X-Cron-Secret."""
-    _verify_cron_secret(x_cron_secret)
-    try:
-        await daily_prediction_job()
-        return {"status": "ok", "message": "Job exécuté avec succès"}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/matches/today", tags=["Matches"])
