@@ -34,19 +34,7 @@ LEAGUE_IDS = {
 LEAGUE_ID_TO_NAME = {tid: name for name, tid in LEAGUE_IDS.items()}
 
 # ID de saison en dur pour ÉVITER 1 appel API inutile par ligue
-SEASON_OVERRIDES: dict[int, int] = {
-    41: 61858,
-    20: 61582,
-    242: 67388,
-    325: 67345,
-    13363: 67400,
-    13362: 67401,
-    13546: 67402,
-    13450: 67403,
-    13742: 67404,
-    853: 68000,
-    24932: 68001,
-}
+SEASON_OVERRIDES: dict[int, int] = {}
 
 FORM_WINDOW = 5
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
@@ -69,22 +57,19 @@ CACHE = {}
 # ---------------------------------------------------------------------------
 
 def _get(url: str, retries: int = 2) -> dict | None:
-    """Effectue une requête GET via ScraperAPI avec caching et consommation minimale."""
     if url in CACHE:
         return CACHE[url]
 
     if SCRAPER_API_KEY:
-        # render=false et ultra_premium désactivé pour consommer exactement 1 crédit par appel
         target_url = (
             f"http://api.scraperapi.com?"
             f"api_key={SCRAPER_API_KEY}"
             f"&url={quote(url)}"
             f"&keep_headers=true"
-            f"&render=false"
         )
         for attempt in range(retries):
             try:
-                resp = SESSION.get(target_url, headers=HEADERS, timeout=10)
+                resp = SESSION.get(target_url, headers=HEADERS, timeout=12)
                 if resp.status_code == 200:
                     data = resp.json()
                     CACHE[url] = data
@@ -96,7 +81,7 @@ def _get(url: str, retries: int = 2) -> dict | None:
                 time.sleep(0.5)
         return None
 
-    # Fallback si exécuté en local sans clé ScraperAPI
+    # Fallback local
     for attempt in range(retries):
         try:
             resp = SESSION.get(url, headers=HEADERS, timeout=8)
