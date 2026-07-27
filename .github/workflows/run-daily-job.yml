@@ -2,15 +2,31 @@ name: Trigger daily backend job
 
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
+    - cron: '0 0 * * *'  # S'exécute tous les jours à minuit UTC
+  workflow_dispatch:      # Permet de le déclencher manuellement depuis GitHub
 
 jobs:
-  trigger_daily_job:
+  run_daily_job:
     runs-on: ubuntu-latest
     steps:
-      - name: Call Render backend daily job endpoint
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
         run: |
-          curl --fail -X POST https://plateforme-de-prediction-sportive-ia.onrender.com/run-daily-job \
-            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
-            -H "Accept: application/json"
+          python -m pip install --upgrade pip
+          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; elif [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Execute Daily Prediction Job
+        env:
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          python -c "import asyncio; from main import daily_prediction_job; asyncio.run(daily_prediction_job())"
