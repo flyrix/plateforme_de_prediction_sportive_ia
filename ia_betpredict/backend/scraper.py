@@ -33,7 +33,7 @@ LEAGUE_IDS = {
     "NPSL":                  13450,  # USA
     "NPSL Founders Cup":     13742,  # USA
     "Club Friendlies":       853,    # Matchs amicaux
-    "Women Club Friendlies": 24932,
+    
 }
 LEAGUE_ID_TO_NAME = {tid: name for name, tid in LEAGUE_IDS.items()}
 
@@ -50,7 +50,7 @@ SEASON_OVERRIDES: dict[int, int] = {
     13450: 67403,
     13742: 67404,
     853: 68000,
-    24932: 68001,
+   
 }
 
 SESSION = requests.Session(impersonate="chrome120")
@@ -64,7 +64,7 @@ HEADERS = {
     "Referer": "https://www.sofascore.com/",
 }
 
-# 💡 OPTIMISATION 1 : Dictionnaire de cache en mémoire pour éviter les requêtes doublons
+# Cache en mémoire pour éviter les requêtes HTTP redondantes durant la même exécution
 CACHE = {}
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,6 @@ CACHE = {}
 def _get(url: str, retries: int = 2) -> dict | None:
     """Effectue une requête GET via ScraperAPI en vérifiant d'abord le cache."""
     
-    # Si l'URL a déjà été appelée pendant ce job Vercel, on renvoie la réponse mise en cache !
     if url in CACHE:
         return CACHE[url]
 
@@ -95,7 +94,7 @@ def _get(url: str, retries: int = 2) -> dict | None:
             if resp.status_code == 200:
                 try:
                     data = resp.json()
-                    CACHE[url] = data  # Sauvegarde dans le cache
+                    CACHE[url] = data
                     return data
                 except Exception:
                     return None
@@ -230,6 +229,27 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
     print(f"[scraper] ✅ {len(all_matches)} match(s) total pour le {date_str}")
     return all_matches
 
+
+def fetch_inplay_matches() -> list[dict]:
+    """Récupère tous les matchs actuellement en cours (Live)."""
+    data = _get(f"{BASE_URL}/sport/football/events/live")
+    if not data:
+        return []
+
+    matches = []
+    seen_event_ids = set()
+    for event in data.get("events", []):
+        league_name = LEAGUE_ID_TO_NAME.get(_event_unique_tournament_id(event))
+        if not league_name:
+            continue
+        match = _event_to_match(event, league_name, live=True)
+        if not match or match["event_id"] in seen_event_ids:
+            continue
+        seen_event_ids.add(match["event_id"])
+        matches.append(match)
+    print(f"[scraper] ✅ {len(matches)} match(s) live ciblé(s)")
+    return matches
+
 # ---------------------------------------------------------------------------
 # Calcul des features pour XGBoost
 # ---------------------------------------------------------------------------
@@ -332,7 +352,6 @@ def compute_features(match: dict) -> dict:
 
 def fetch_matches_with_features(date_str: str | None = None) -> list[dict]:
     matches = fetch_all_matches(date_str)
-    # 💡 OPTIMISATION 2 : S'il n'y a aucun match, on évite tout appel inutile vers les features
     if not matches:
         return []
         
