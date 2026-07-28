@@ -15,7 +15,7 @@ from curl_cffi import requests
 # Configuration
 # ---------------------------------------------------------------------------
 
-print(f"[DEBUG] SCRAPER_API_KEY est présente ? {'OUI' if SCRAPER_API_KEY else 'NON (VIDE)'}")
+
 BASE_URL = "https://api.sofascore.com/api/v1"
 
 LEAGUE_IDS = {
@@ -39,6 +39,7 @@ SEASON_OVERRIDES: dict[int, int] = {}
 
 FORM_WINDOW = 5
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
+print(f"[DEBUG] SCRAPER_API_KEY est présente ? {'OUI' if SCRAPER_API_KEY else 'NON (VIDE)'}")
 
 SESSION = requests.Session(impersonate="chrome120")
 SESSION.trust_env = False
