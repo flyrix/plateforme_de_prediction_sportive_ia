@@ -97,6 +97,8 @@ FEATURE_COLUMNS = [
     "days_since_last_h", "days_since_last_a",
     "h2h_over25_rate",   "h2h_btts_rate",
     "is_neutral_ground",
+    "form_points_diff",  "win_rate_diff",
+    "btts_rate_diff",    "over25_rate_diff",
 ]
 
 # Encodage si besoin de compatibilité
@@ -111,9 +113,35 @@ COUNTRY_ENCODING = {
 FEATURE_COLUMNS_LEGACY = FEATURE_COLUMNS + ["Country_encoded"]
 
 
-def _features_to_df(features: dict, legacy: bool = False) -> pd.DataFrame:
-    cols = FEATURE_COLUMNS_LEGACY if legacy else FEATURE_COLUMNS
+def _model_feature_names(model) -> list[str] | None:
+    """
+    Récupère la liste exacte des features attendues DIRECTEMENT depuis le modèle
+    (feature_names_in_ pour un wrapper sklearn, ou booster.feature_names pour XGBoost brut).
+    Évite de dépendre d'une liste codée en dur qui se désynchronise à chaque réentraînement.
+    Retourne None si le modèle ne l'expose pas (ex: mode démo, modèle très ancien).
+    """
+    names = getattr(model, "feature_names_in_", None)
+    if names is not None:
+        return list(names)
+    try:
+        booster = model.get_booster()
+        if booster.feature_names:
+            return list(booster.feature_names)
+    except Exception:
+        pass
+    return None
+
+
+def _features_to_df(features: dict, model=None, legacy: bool = False) -> pd.DataFrame:
+    cols = _model_feature_names(model) if model is not None else None
+    if not cols:
+        cols = FEATURE_COLUMNS_LEGACY if legacy else FEATURE_COLUMNS
+        print(f"[predictor] ⚠️ Colonnes du modèle non détectables, "
+              f"repli sur la liste par défaut ({len(cols)} features).")
     row = {col: features.get(col, 0.0) for col in cols}
+    missing = [c for c in cols if c not in features]
+    if missing:
+        print(f"[predictor] ⚠️ Features absentes du dict, valeur 0.0 utilisée: {missing}")
     return pd.DataFrame([row])
 
 
@@ -191,22 +219,27 @@ def predict_match(features: dict, league: str = "") -> dict:
     if models is None:
         raise RuntimeError(f"Aucun modèle disponible pour la ligue '{league}'")
 
-    X = _features_to_df(features, legacy=False)
-
     source = f"spécialisé '{group}'" if group in _SPECIALIZED else "global"
     print(f"[predictor] Modèle utilisé : {source} pour {league}")
 
-    winner_predictions = _double_chance_predictions(models["dc"], X)
+    # Chaque modèle (dc/over/btts) peut avoir son propre schéma de features
+    # (notamment si entraînés à des moments différents) : on construit un X
+    # dédié par modèle plutôt qu'un X unique partagé.
+    X_dc   = _features_to_df(features, model=models["dc"])
+    X_over = _features_to_df(features, model=models["over"])
+    X_btts = _features_to_df(features, model=models["btts"])
 
-    btts_probs = _predict_proba_dict(models["btts"], X)
+    winner_predictions = _double_chance_predictions(models["dc"], X_dc)
+
+    btts_probs = _predict_proba_dict(models["btts"], X_btts)
     btts_proba = btts_probs.get(1, btts_probs.get("1", 0.0))
 
     # Over 2.5 : classifieur si présent, sinon régresseur
     if hasattr(models["over"], "predict_proba"):
-        over_proba = models["over"].predict_proba(X)[0][1]
+        over_proba = models["over"].predict_proba(X_over)[0][1]
     else:
         import math
-        goals_pred = float(models["over"].predict(X)[0])
+        goals_pred = float(models["over"].predict(X_over)[0])
         over_proba = round(1 / (1 + math.exp(-(goals_pred - 2.5))), 4)
 
     return {

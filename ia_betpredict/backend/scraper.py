@@ -63,7 +63,11 @@ def _get(url: str, retries: int = 2) -> dict | None:
         return CACHE[url]
 
     if SCRAPER_API_KEY:
-       
+        # NOTE: render=true a été retiré volontairement.
+        # api.sofascore.com renvoie du JSON brut, pas de HTML nécessitant du JS.
+        # render=true coûte beaucoup plus de crédits et peut provoquer des timeouts
+        # (le rendering headless dépasse souvent le délai imparti), causant des
+        # échecs silencieux quand ils ne sont pas loggués.
         target_url = (
             f"http://api.scraperapi.com?"
             f"api_key={SCRAPER_API_KEY}"
@@ -369,6 +373,10 @@ def compute_features(match: dict) -> dict:
         "h2h_over25_rate":   h2h["h2h_over25_rate"],
         "h2h_btts_rate":     h2h["h2h_btts_rate"],
         "is_neutral_ground": is_neutral,
+        "form_points_diff":  round(hf["form_pts"] - af["form_pts"], 2),
+        "win_rate_diff":     round(hf["win_rate"] - af["win_rate"], 2),
+        "btts_rate_diff":    round(hf["btts_rate"] - af["btts_rate"], 2),
+        "over25_rate_diff":  round(hf["over25_rate"] - af["over25_rate"], 2),
         "Country_encoded":   COUNTRY_ENCODING.get(match["league"], 0),
     }
 
