@@ -1,9 +1,9 @@
-name: Trigger daily backend job
+name: Daily Scraper & Prediction Job
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # S'exécute tous les jours à minuit UTC
-  workflow_dispatch:      # Permet de le déclencher manuellement depuis GitHub
+    - cron: '0 0 * * *'  # Exécution automatique chaque nuit à 00:00 UTC
+  workflow_dispatch:      # Permet le déclenchement manuel depuis l'onglet Actions
 
 jobs:
   run_daily_job:
@@ -21,12 +21,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; elif [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f ia_betpredict/backend/requirements.txt ]; then
+            pip install -r ia_betpredict/backend/requirements.txt
+          elif [ -f backend/requirements.txt ]; then
+            pip install -r backend/requirements.txt
+          fi
 
-      - name: Execute Daily Prediction Job
+      - name: Execute Daily Job
         env:
           SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          python -c "import asyncio; from main import daily_prediction_job; asyncio.run(daily_prediction_job())"
+          PYTHONPATH=ia_betpredict/backend python -c "import asyncio, sys; sys.path.insert(0, 'ia_betpredict/backend'); from main import daily_prediction_job; asyncio.run(daily_prediction_job())"

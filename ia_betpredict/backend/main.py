@@ -9,8 +9,6 @@ import sys
 import datetime
 
 # Vercel et Render exécutent ce fichier depuis la racine du projet.
-# On ajoute le dossier backend/ au path pour que les imports
-# relatifs (scraper, predictor, db) fonctionnent correctement.
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -34,7 +32,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Restreindre les origines CORS en production via la variable ALLOWED_ORIGINS
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*")
 _CORS_ORIGINS = [origin.strip() for origin in _allowed_origins.split(",") if origin.strip()]
 if not _CORS_ORIGINS:
@@ -47,7 +44,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Clé secrète pour protéger les endpoints admin
 _CRON_SECRET = os.environ.get("CRON_SECRET", "")
 _ALLOW_UNAUTHENTICATED_ADMIN = os.environ.get("ALLOW_UNAUTHENTICATED_ADMIN", "").lower() in {
     "1", "true", "yes", "on"
@@ -55,11 +51,74 @@ _ALLOW_UNAUTHENTICATED_ADMIN = os.environ.get("ALLOW_UNAUTHENTICATED_ADMIN", "")
 
 
 # ---------------------------------------------------------------------------
+# La fonction du Job Quotidien (Exécutée par GitHub Actions)
+# ---------------------------------------------------------------------------
+
+async def daily_prediction_job():
+    """Exécute le cycle complet : Scraping -> Prédiction -> Sauvegarde Neon"""
+    today = datetime.date.today().isoformat()
+    print(f"\n[GitHub Actions] ▶ Lancement du job quotidien — {today}")
+
+    try:
+        matches = fetch_matches_with_features(today)
+    except Exception as exc:
+        print(f"[GitHub Actions] ❌ Erreur scraping : {exc}")
+        raise exc
+
+    if not matches:
+        print("[GitHub Actions] Aucun match trouvé pour aujourd'hui sur les ligues cibles.")
+        return
+
+    all_coupons = []
+    for match in matches:
+        try:
+            coupons = generate_coupons(match)
+            all_coupons.extend(coupons)
+        except Exception as exc:
+            print(f"[GitHub Actions] ⚠️ Erreur prédiction {match.get('match_name')} : {exc}")
+
+    if not all_coupons:
+        print("[GitHub Actions] Aucun coupon éligible généré.")
+        return
+
+    sql = """
+        INSERT INTO predictions_history
+            (match_date, match_name, league, home_team, away_team,
+             match_time, prediction_type, confidence_rate, status)
+        VALUES
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (match_date, match_name, prediction_type) DO NOTHING
+    """
+    inserted = 0
+    skipped = 0
+    for c in all_coupons:
+        try:
+            rows = execute(sql, (
+                today,
+                c["match_name"],
+                c["league"],
+                c["home_team"],
+                c["away_team"],
+                c.get("match_time", ""),
+                c["prediction_type"],
+                c["confidence_rate"],
+                c["status"],
+            ))
+            if rows:
+                inserted += 1
+            else:
+                skipped += 1
+        except Exception as exc:
+            print(f"[GitHub Actions] ⚠️ Erreur insertion BDD {c.get('match_name')} : {exc}")
+
+    print(f"[GitHub Actions] ✅ {inserted} coupon(s) insérés, {skipped} doublon(s) ignorés.")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _verify_cron_secret(provided: str | None) -> None:
-    """Vérifie le header X-Cron-Secret pour les routes admin."""
     if not _CRON_SECRET:
         if _ALLOW_UNAUTHENTICATED_ADMIN:
             return
@@ -104,17 +163,15 @@ async def root():
 
 @app.post("/run-daily-job", tags=["Admin"])
 async def run_daily_job():
-    """Endpoint désactivé sur Vercel pour économiser les ressources et éviter les timeouts.
-    L'exécution quotidienne est désormais gérée par GitHub Actions."""
+    """Endpoint désactivé publiquement. Seul GitHub Actions exécute daily_prediction_job()."""
     return {
         "status": "disabled",
-        "message": "Cet endpoint est désactivé sur Vercel. Le job doit être exécuté via GitHub Actions."
+        "message": "Cet endpoint est désactivé sur Vercel/Render. Le job est exécuté en local/CLI par GitHub Actions."
     }
 
 
 @app.get("/predictions/live", tags=["Predictions"])
 async def get_live_predictions():
-    """Récupère les matchs live, calcule les features et retourne les prédictions."""
     try:
         matches = fetch_inplay_matches()
         all_coupons = []
@@ -151,7 +208,6 @@ async def get_coupons_by_date(
     league: str | None = Query(default=None),
     min_confidence: float = Query(default=0.0, ge=0, le=1),
 ):
-    """Retourne les coupons pour une date donnée au format YYYY-MM-DD."""
     try:
         datetime.date.fromisoformat(date)
     except ValueError:
@@ -165,9 +221,6 @@ async def update_coupon_status(
     status: str = Query(..., pattern="^(Gagné|Perdu|En attente|Annulé)$"),
     x_cron_secret: str | None = Header(default=None),
 ):
-    """
-    Met à jour le statut d'un coupon (Gagné / Perdu / En attente / Annulé).
-    """
     _verify_cron_secret(x_cron_secret)
     sql = "UPDATE predictions_history SET status = %s WHERE id = %s::uuid"
     updated = execute(sql, (status, coupon_id))
@@ -178,7 +231,6 @@ async def update_coupon_status(
 
 @app.get("/matches/today", tags=["Matches"])
 async def get_todays_matches():
-    """Retourne les matchs programmés pour aujourd'hui (date locale UTC)."""
     today = datetime.date.today().isoformat()
     try:
         matches = fetch_all_matches(today)
@@ -189,7 +241,6 @@ async def get_todays_matches():
 
 @app.get("/matches/inplay", tags=["Matches"])
 async def get_inplay_matches():
-    """Retourne les matchs actuellement en cours détectés via le scraper."""
     try:
         matches = fetch_inplay_matches()
     except Exception as exc:
