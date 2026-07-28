@@ -62,60 +62,41 @@ def _get(url: str, retries: int = 2) -> dict | None:
     if url in CACHE:
         return CACHE[url]
 
-    if SCRAPER_API_KEY:
-        # NOTE: render=true a été retiré volontairement.
-        # api.sofascore.com renvoie du JSON brut, pas de HTML nécessitant du JS.
-        # render=true coûte beaucoup plus de crédits et peut provoquer des timeouts
-        # (le rendering headless dépasse souvent le délai imparti), causant des
-        # échecs silencieux quand ils ne sont pas loggués.
-        target_url = (
-            f"http://api.scraperapi.com?"
-            f"api_key={SCRAPER_API_KEY}"
-            f"&url={quote(url)}"
-            f"&keep_headers=true"
-        )
-        for attempt in range(retries):
-            try:
-                resp = SESSION.get(target_url, headers=HEADERS, timeout=25)
-                if resp.status_code == 200:
-                    try:
-                        data = resp.json()
-                    except Exception:
-                        print(f"[scraper] ⚠️ Réponse non-JSON pour {url} (status 200). "
-                              f"Extrait: {resp.text[:200]!r}")
-                        CACHE[url] = None
-                        return None
-                    CACHE[url] = data
-                    return data
-                elif resp.status_code == 404:
-                    CACHE[url] = None
-                    return None
-                else:
-                    print(f"[scraper] ⚠️ HTTP {resp.status_code} pour {url} "
-                          f"(tentative {attempt + 1}/{retries}). Extrait: {resp.text[:200]!r}")
-            except Exception as exc:
-                print(f"[scraper] ⚠️ Exception pour {url} (tentative {attempt + 1}/{retries}): {exc!r}")
-                time.sleep(0.5)
+    if not SCRAPER_API_KEY:
+        print("[scraper] ❌ Pas de SCRAPER_API_KEY configurée. Requête annulée.")
         return None
 
-    # Fallback local
+    target_url = (
+        f"http://api.scraperapi.com?"
+        f"api_key={SCRAPER_API_KEY}"
+        f"&url={quote(url)}"
+        f"&keep_headers=true"
+    )
+
     for attempt in range(retries):
         try:
-            resp = SESSION.get(url, headers=HEADERS, timeout=8)
+            resp = SESSION.get(target_url, headers=HEADERS, timeout=25)
             if resp.status_code == 200:
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except Exception:
+                    print(f"[scraper] ⚠️ Réponse non-JSON pour {url} (status 200). "
+                          f"Extrait: {resp.text[:200]!r}")
+                    CACHE[url] = None
+                    return None
                 CACHE[url] = data
                 return data
             elif resp.status_code == 404:
                 CACHE[url] = None
                 return None
             else:
-                print(f"[scraper] ⚠️ HTTP {resp.status_code} (fallback local) pour {url}")
+                print(f"[scraper] ⚠️ HTTP {resp.status_code} pour {url} "
+                      f"(tentative {attempt + 1}/{retries}). Extrait: {resp.text[:200]!r}")
         except Exception as exc:
-            print(f"[scraper] ⚠️ Exception (fallback local) pour {url}: {exc!r}")
+            print(f"[scraper] ⚠️ Exception pour {url} (tentative {attempt + 1}/{retries}): {exc!r}")
             time.sleep(0.5)
-    return None
 
+    return None
 # ---------------------------------------------------------------------------
 # Extraction des saisons et matchs
 # ---------------------------------------------------------------------------
