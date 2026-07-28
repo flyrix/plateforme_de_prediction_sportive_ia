@@ -66,6 +66,7 @@ def _get(url: str, retries: int = 2) -> dict | None:
             f"api_key={SCRAPER_API_KEY}"
             f"&url={quote(url)}"
             f"&keep_headers=true"
+            f"&render=true"
         )
         for attempt in range(retries):
             try:
