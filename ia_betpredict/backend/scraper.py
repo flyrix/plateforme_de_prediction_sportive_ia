@@ -63,24 +63,34 @@ def _get(url: str, retries: int = 2) -> dict | None:
         return CACHE[url]
 
     if SCRAPER_API_KEY:
+       
         target_url = (
             f"http://api.scraperapi.com?"
             f"api_key={SCRAPER_API_KEY}"
             f"&url={quote(url)}"
             f"&keep_headers=true"
-            f"&render=true"
         )
         for attempt in range(retries):
             try:
-                resp = SESSION.get(target_url, headers=HEADERS, timeout=12)
+                resp = SESSION.get(target_url, headers=HEADERS, timeout=25)
                 if resp.status_code == 200:
-                    data = resp.json()
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        print(f"[scraper] ⚠️ Réponse non-JSON pour {url} (status 200). "
+                              f"Extrait: {resp.text[:200]!r}")
+                        CACHE[url] = None
+                        return None
                     CACHE[url] = data
                     return data
                 elif resp.status_code == 404:
                     CACHE[url] = None
                     return None
+                else:
+                    print(f"[scraper] ⚠️ HTTP {resp.status_code} pour {url} "
+                          f"(tentative {attempt + 1}/{retries}). Extrait: {resp.text[:200]!r}")
             except Exception as exc:
+                print(f"[scraper] ⚠️ Exception pour {url} (tentative {attempt + 1}/{retries}): {exc!r}")
                 time.sleep(0.5)
         return None
 
@@ -95,7 +105,10 @@ def _get(url: str, retries: int = 2) -> dict | None:
             elif resp.status_code == 404:
                 CACHE[url] = None
                 return None
-        except Exception:
+            else:
+                print(f"[scraper] ⚠️ HTTP {resp.status_code} (fallback local) pour {url}")
+        except Exception as exc:
+            print(f"[scraper] ⚠️ Exception (fallback local) pour {url}: {exc!r}")
             time.sleep(0.5)
     return None
 
@@ -175,10 +188,10 @@ def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
         match = _event_to_match(event, league_name)
         if not match or match["event_id"] in seen_event_ids:
             continue
-            
+
         seen_event_ids.add(match["event_id"])
         matches.append(match)
-        
+
     return matches
 
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
@@ -194,7 +207,7 @@ def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str
     for event in data.get("events", []):
         ts = event.get("startTimestamp", 0)
         event_date = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
-        
+
         if event_date != date_str:
             continue
 
@@ -249,7 +262,7 @@ def fetch_inplay_matches() -> list[dict]:
             continue
         seen_event_ids.add(match["event_id"])
         matches.append(match)
-        
+
     print(f"[scraper] ✅ {len(matches)} match(s) live ciblé(s)")
     return matches
 
@@ -326,7 +339,7 @@ def compute_features(match: dict) -> dict:
 
     # 💡 ÉCONOMIE DE CRÉDITS : On désactive le H2H uniquement pour les matchs amicaux
     is_friendly = match["league"] in ["Club Friendlies", "Women Club Friendlies"]
-    
+
     if not is_friendly:
         h2h = _get_h2h_features(match["home_team_id"], match["away_team_id"])
     else:
