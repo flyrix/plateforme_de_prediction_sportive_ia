@@ -15,6 +15,7 @@ from curl_cffi import requests
 # Configuration
 # ---------------------------------------------------------------------------
 
+print(f"[DEBUG] SCRAPER_API_KEY est présente ? {'OUI' if SCRAPER_API_KEY else 'NON (VIDE)'}")
 BASE_URL = "https://api.sofascore.com/api/v1"
 
 LEAGUE_IDS = {
