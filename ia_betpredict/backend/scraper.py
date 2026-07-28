@@ -154,16 +154,29 @@ def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
     matches = []
     seen_event_ids = set()
     for event in data.get("events", []):
-        league_name = LEAGUE_ID_TO_NAME.get(_event_unique_tournament_id(event))
+        tournament = event.get("tournament", {}) or {}
+        unique_id = _event_unique_tournament_id(event)
+        tournament_name = tournament.get("name", "").lower()
+
+        # 1. Verification par ID de ligue (Championnats classiques)
+        league_name = LEAGUE_ID_TO_NAME.get(unique_id)
+
+        # 2. Détection dynamique pour les matchs amicaux
+        if not league_name:
+            if "friendly" in tournament_name or "amical" in tournament_name or "club friendlies" in tournament_name:
+                league_name = "Club Friendlies"
+
         if not league_name:
             continue
+
         match = _event_to_match(event, league_name)
         if not match or match["event_id"] in seen_event_ids:
             continue
+            
         seen_event_ids.add(match["event_id"])
         matches.append(match)
+        
     return matches
-
 
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
     season_id = _get_current_season_id(tournament_id)
