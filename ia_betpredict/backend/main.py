@@ -1,7 +1,7 @@
 """
 main.py
 -------
-Point d'entrée FastAPI optimisé pour Vercel Serverless & GitHub Actions.
+Point d'entrée FastAPI optimisé pour Vercel Serverless, Render & GitHub Actions.
 """
 
 import os
@@ -13,7 +13,7 @@ _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 # Imports locaux
@@ -27,17 +27,34 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# ---------------------------------------------------------------------------
+# Configuration CORS permissive pour Render & Vercel
+# ---------------------------------------------------------------------------
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*")
 _CORS_ORIGINS = [origin.strip() for origin in _allowed_origins.split(",") if origin.strip()]
-if not _CORS_ORIGINS:
+if not _CORS_ORIGINS or "*" in _CORS_ORIGINS:
     _CORS_ORIGINS = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_CORS_ORIGINS,
-    allow_methods=["*"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+@app.options("/{full_path:path}")
+async def options_handler(request: Request, full_path: str):
+    """Intercepte et valide directement les requêtes de contrôle préalable (Preflight OPTIONS)."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        },
+    )
 
 _CRON_SECRET = os.environ.get("CRON_SECRET", "")
 _ALLOW_UNAUTHENTICATED_ADMIN = os.environ.get("ALLOW_UNAUTHENTICATED_ADMIN", "").lower() in {
@@ -83,7 +100,7 @@ async def daily_prediction_job():
         print("[GitHub Actions] Aucun coupon éligible généré par le modèle.")
         return
 
-    # Respect strict du schéma predictions_history (UUID auto-généré par PostgreSQL)
+    # Respect strict du schéma predictions_history
     sql = """
         INSERT INTO predictions_history
             (match_date, match_name, league, home_team, away_team,
@@ -120,7 +137,6 @@ async def settle_finished_predictions():
     """Parcourt les coupons en attente en BDD et met à jour leur statut ('Gagné' / 'Perdu')."""
     print("\n[Settler] 🔄 Vérification des coupons en attente...")
     
-    # Récupération des prédictions en attente
     pending = execute(
         "SELECT id, match_name, match_date, prediction_type FROM predictions_history WHERE status = 'En attente'", 
         fetch=True
@@ -130,12 +146,10 @@ async def settle_finished_predictions():
         print("[Settler] Aucun coupon en attente de résultat.")
         return
 
-    # Scraping des matchs du jour pour vérifier les résultats terminés
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     from scraper import fetch_all_matches
     matches_today = fetch_all_matches(today)
     
-    # Création d'un dictionnaire par nom de match pour un accès rapide
     match_dict = {m["match_name"]: m for m in matches_today if m.get("status") in ["finished", "ended"]}
 
     for p in pending:
@@ -143,7 +157,6 @@ async def settle_finished_predictions():
         if not match_info:
             continue
 
-        # Récupération du détail complet de l'événement via son event_id
         event_id = match_info.get("event_id")
         if not event_id:
             continue

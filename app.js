@@ -1,14 +1,13 @@
 /**
  * app.js — IA-BetPredict Frontend
  *
- * 1. Charge les coupons depuis l'API FastAPI
+ * 1. Charge les coupons depuis l'API FastAPI avec gestion de retry/timeout pour Render
  * 2. Affiche les cartes avec jauge de confiance
  * 3. Gère les filtres par ligue
  */
 
 // ── Config ────────────────────────────────────────────────
 const RENDER_API_URL = "https://plateforme-de-prediction-sportive-ia.onrender.com";
-
 const API_BASE = window.ENV_API_BASE || RENDER_API_URL;
 console.log(`[app] API_BASE=${API_BASE}`);
 
@@ -45,6 +44,40 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadCoupons();
 });
 
+// ── Helper Fetch avec Retry & Timeout pour Render ─────────
+async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000) {
+  try {
+    const controller = new AbortController();
+    // 40 secondes pour laisser le serveur Render sortir du mode veille
+    const timeoutId = setTimeout(() => controller.abort(), 40000);
+
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`Erreur HTTP (${response.status})`);
+    }
+
+    return await response.json();
+  } catch (err) {
+    if (retries > 0) {
+      console.warn(`[app] Tentative de connexion au serveur (${retries} réessais restants)...`);
+      await new Promise(resolve => setTimeout(resolve, backoff));
+      return fetchWithRetry(url, options, retries - 1, backoff * 1.5);
+    }
+    throw err;
+  }
+}
+
 // ── Date header ───────────────────────────────────────────
 function setTodayLabel() {
   const label = document.getElementById("today-label");
@@ -60,13 +93,11 @@ async function loadCoupons() {
   showState("loading");
 
   try {
-    // 1. Charger les coupons de la base de données Neon
-    const dailyRes = await fetch(`${API_BASE}/coupons`);
-    if (!dailyRes.ok) throw new Error(`Erreur coupons (${dailyRes.status})`);
-    const dailyData = await dailyRes.json();
+    // 1. Charger les coupons de la BDD Neon via FastAPI
+    const dailyData = await fetchWithRetry(`${API_BASE}/coupons`);
     const dailyCoupons = dailyData.coupons || [];
 
-    // 2. Charger le live de manière ISOLEEE (ne bloque pas le reste si échec)
+    // 2. Charger le live de manière isolée
     let liveCoupons = [];
     try {
       const liveRes = await fetch(`${API_BASE}/predictions/live`);
@@ -78,16 +109,14 @@ async function loadCoupons() {
       console.warn("[app] Live indisponible ou vide :", liveErr);
     }
 
-    // 3. Fusionner et dédoublonner (si un match passe en live, la version Live prend le dessus)
+    // 3. Fusionner et dédoublonner
     const couponsMap = new Map();
 
-    // Insérer d'abord les coupons du jour
     dailyCoupons.forEach(c => {
       const key = `${c.match_name}_${c.prediction_type}`;
       couponsMap.set(key, c);
     });
 
-    // Écraser ou ajouter avec les matchs Live
     liveCoupons.forEach(c => {
       const key = `${c.match_name}_${c.prediction_type}`;
       couponsMap.set(key, c);
@@ -101,7 +130,7 @@ async function loadCoupons() {
 
   } catch (err) {
     console.error("[app] Erreur API globale :", err);
-    showState("error", `Impossible de joindre l'API. (${err.message})`);
+    showState("error", `Impossible de joindre l'API. Le serveur Render est peut-être en cours de réveil. (${err.message})`);
   }
 }
 
@@ -119,7 +148,6 @@ function renderCoupons() {
   showState("grid");
   $grid.innerHTML = filtered.map(couponCard).join("");
 
-  // Animation fluide des barres de confiance
   requestAnimationFrame(() => {
     document.querySelectorAll(".confidence-bar-fill").forEach(bar => {
       const w = bar.dataset.width;
@@ -132,7 +160,6 @@ function renderCoupons() {
 function getConfidenceRate(c) {
   const raw = c.confidence_rate !== undefined ? c.confidence_rate : c.confidence;
   const num = Number(raw) || 0;
-  // Si déjà en pourcentage (ex: 85), ramener entre 0 et 1
   return num > 1 ? num / 100 : num;
 }
 
@@ -211,12 +238,10 @@ function updateStats() {
     return;
   }
   
-  // Extraction sécurisée des taux de confiance sous forme numérique
   const rates = allCoupons.map(c => getConfidenceRate(c));
-  
-  const sum  = rates.reduce((acc, curr) => acc + curr, 0);
-  const max  = Math.max(...rates);
-  const avg  = sum / rates.length;
+  const sum   = rates.reduce((acc, curr) => acc + curr, 0);
+  const max   = Math.max(...rates);
+  const avg   = sum / rates.length;
 
   if ($total) $total.textContent = allCoupons.length;
   if ($avg)   $avg.textContent   = Math.round(avg * 100) + "%";
@@ -239,7 +264,7 @@ function setupFilters() {
 function showState(state, message = "") {
   if ($loading) $loading.style.display = state === "loading" ? "flex"  : "none";
   if ($empty)   $empty.style.display   = state === "empty"   ? "block" : "none";
-  if ($grid)    $grid.style.display    = state === "grid"    ? "grid"  : "none"; // Changé en "grid" si la mise en page CSS utilise un grid
+  if ($grid)    $grid.style.display    = state === "grid"    ? "grid"  : "none";
 
   const $err = document.getElementById("error-state");
   if ($err) {
