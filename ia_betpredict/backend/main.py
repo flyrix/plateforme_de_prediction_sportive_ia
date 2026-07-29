@@ -172,8 +172,8 @@ async def daily_prediction_job():
 
 
 async def settle_finished_predictions():
-    """Vérification et mise à jour du statut ('Gagné' / 'Perdu') des matchs terminés."""
-    print("\n[Settler] 🔄 Mise à jour des résultats (Gagné / Perdu)...")
+    """Vérification et mise à jour du statut ('Gagné' / 'Perdu') ET du score des matchs terminés."""
+    print("\n[Settler] 🔄 Mise à jour des résultats (Gagné / Perdu) et des scores...")
     
     pending = execute(
         "SELECT id, match_name, match_date, prediction_type FROM predictions_history WHERE status = 'En attente'", 
@@ -224,12 +224,15 @@ async def settle_finished_predictions():
             elif pred == "BTTS" and btts:
                 status_val = "Gagné"
 
-            execute(
-                "UPDATE predictions_history SET status = %s WHERE id = %s",
-                (status_val, p["id"])
-            )
-            print(f"[Settler] Coupon #{p['id']} ({p['match_name']} - {pred}) -> {status_val}")
+            # Formattage du score (ex: "2 - 1")
+            formatted_score = f"{home_score} - {away_score}"
 
+            # UPDATE : Mise à jour simultanée du statut ET de la colonne score
+            execute(
+                "UPDATE predictions_history SET status = %s, score = %s WHERE id = %s",
+                (status_val, formatted_score, p["id"])
+            )
+            print(f"[Settler] Coupon #{p['id']} ({p['match_name']} - {pred}) -> Statut: {status_val}, Score: {formatted_score}")
 
 if __name__ == "__main__":
     async def run_cron():
