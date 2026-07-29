@@ -90,7 +90,7 @@ function setupFilterDelegation() {
 
 async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, timeoutMs = 60000) {
   const controller = new AbortController();
-  // 60 secondes pour laisser le temps au cold-start de Render
+  // 60 secondes pour laisser le temps au cold-start de Render de se terminer
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -114,7 +114,7 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, ti
   } catch (err) {
     clearTimeout(timeoutId);
 
-    // Si la requête a été interrompue par timeout ou navigation, on retente si possible
+    // Si la requête a été interrompue par timeout ou navigation, on retente
     if (retries > 0) {
       console.warn(`[app] Réveil / Connexion API (${err.message})... Tentative restante: ${retries}`);
       await new Promise(resolve => setTimeout(resolve, backoff));
@@ -124,6 +124,7 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, ti
     throw err;
   }
 }
+
 function setTodayLabel() {
   const label = document.getElementById("today-label");
   if (label) {
@@ -142,7 +143,8 @@ async function loadCoupons() {
       url += `?status=${encodeURIComponent(activeStatus)}`;
     }
 
-    const dailyData = await fetchWithRetry(url, {}, 3, 2000, 35000);
+    // Passage du délai à 60000ms (60s) pour éviter l'annulation prématurée
+    const dailyData = await fetchWithRetry(url, {}, 3, 3000, 60000);
     allCoupons = dailyData.coupons || [];
 
     generateDynamicFilters();
