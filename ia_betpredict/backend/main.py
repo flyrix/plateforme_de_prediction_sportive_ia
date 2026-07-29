@@ -172,9 +172,10 @@ async def daily_prediction_job():
 
 
 async def settle_finished_predictions():
-    """Vérification et mise à jour du statut ('Gagné' / 'Perdu') ET du score des matchs terminés."""
+    """Vérification et mise à jour du statut et du score des matchs terminés."""
     print("\n[Settler] 🔄 Mise à jour des résultats (Gagné / Perdu) et des scores...")
     
+    # 1. On récupère la date du coupon pour chercher les résultats à la bonne date
     pending = execute(
         "SELECT id, match_name, match_date, prediction_type FROM predictions_history WHERE status = 'En attente'", 
         fetch=True
@@ -184,14 +185,31 @@ async def settle_finished_predictions():
         print("[Settler] Aucun coupon en attente.")
         return
 
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     from scraper import fetch_all_matches
-    matches_today = fetch_all_matches(today)
+
+    # 2. Regrouper les coupons par date pour éviter de scraper plusieurs fois la même date
+    dates_to_check = set(p["match_date"] for p in pending if p.get("match_date"))
     
-    match_dict = {m["match_name"]: m for m in matches_today if m.get("status") in ["finished", "ended"]}
+    matches_by_date = {}
+    for date_str in dates_to_check:
+        try:
+            # Conversion si match_date est un objet date ou str
+            formatted_date = str(date_str)
+            matches_by_date[formatted_date] = fetch_all_matches(formatted_date)
+        except Exception as err:
+            print(f"[Settler] ⚠️ Erreur lors de la récupération des matchs pour {date_str}: {err}")
 
     for p in pending:
-        match_info = match_dict.get(p["match_name"])
+        m_date = str(p.get("match_date"))
+        matches_today = matches_by_date.get(m_date, [])
+        
+        # Recherche par nom exact ou correspondance approximative
+        p_name = p["match_name"].strip().lower()
+        match_info = next(
+            (m for m in matches_today if m.get("match_name", "").strip().lower() == p_name and m.get("status") in ["finished", "ended"]),
+            None
+        )
+        
         if not match_info:
             continue
 
@@ -206,7 +224,8 @@ async def settle_finished_predictions():
         ev = data["event"]
         status_type = ev.get("status", {}).get("type")
 
-        if status_type == "finished":
+        # Accepter 'finished' ou 'ended'
+        if status_type in ["finished", "ended"]:
             home_score = ev.get("homeScore", {}).get("current", 0) or 0
             away_score = ev.get("awayScore", {}).get("current", 0) or 0
             pred = p["prediction_type"]
@@ -224,16 +243,15 @@ async def settle_finished_predictions():
             elif pred == "BTTS" and btts:
                 status_val = "Gagné"
 
-            # Formattage du score (ex: "2 - 1")
             formatted_score = f"{home_score} - {away_score}"
 
-            # UPDATE : Mise à jour simultanée du statut ET de la colonne score
+            # Mise à jour du statut ET du score
             execute(
                 "UPDATE predictions_history SET status = %s, score = %s WHERE id = %s",
                 (status_val, formatted_score, p["id"])
             )
-            print(f"[Settler] Coupon #{p['id']} ({p['match_name']} - {pred}) -> Statut: {status_val}, Score: {formatted_score}")
-
+            print(f"[Settler] ✅ Coupon #{p['id']} ({p['match_name']} - {pred}) -> Statut: {status_val}, Score: {formatted_score}")
+            
 if __name__ == "__main__":
     async def run_cron():
         await daily_prediction_job()
