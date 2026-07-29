@@ -249,27 +249,59 @@ def predict_match(features: dict, league: str = "") -> dict:
     }
 
 
-def generate_coupons(match: dict) -> list[dict]:
+def generate_coupons(match: dict, require_value_bet: bool = True) -> list[dict]:
     """
-    Applique les seuils métier et retourne uniquement les paris
-    dont la confiance dépasse le seuil requis.
+    Applique les seuils métier et calcule l'EV si la cote est présente.
+    
+    :param match: Dictionnaire contenant les features et éventuellement les odds.
+    :param require_value_bet: Si True, exige une cote et un EV > 0 pour valider le coupon.
     """
     features   = match.get("features", {})
+    odds       = match.get("odds", {})  # ex: {"1N2_H": 1.85, "Over_2.5": 1.90}
     probas     = predict_match(features, league=match.get("league", ""))
     coupons    = []
 
     for market, confidence in probas.items():
-        threshold = THRESHOLDS.get(market, 1.0)
+        threshold     = THRESHOLDS.get(market, 1.0)
+        bookmaker_odd = odds.get(market) if odds else None
+
+        # 1. Le modèle valide-t-il la confiance minimale ?
         if confidence >= threshold:
-            coupons.append({
-                "match_name":      match["match_name"],
-                "league":          match["league"],
-                "home_team":       match["home_team"],
-                "away_team":       match["away_team"],
-                "match_time":      match.get("match_time", ""),
-                "prediction_type": market,
-                "confidence_rate": confidence,
-                "status":          "En attente",
-            })
+            
+            # Cas 1 : La cote est disponible -> Calcul de l'EV
+            if bookmaker_odd is not None and bookmaker_odd > 1.0:
+                ev = (confidence * bookmaker_odd) - 1.0
+
+                # On ne retient que les paris rentables (EV > 0)
+                if ev > 0:
+                    coupons.append({
+                        "league":          match.get("league"),
+                        "home_team":       match.get("home_team"),
+                        "away_team":       match.get("away_team"),
+                        "match_time":      match.get("match_time"),
+                        "prediction_type": market,
+                        "confidence_rate": confidence,
+                        "odd":             bookmaker_odd,
+                        "expected_value":  round(ev, 4),
+                        "is_value_bet":    True,
+                        "status":          match.get("status", "En attente"),
+                        "event_id":        match.get("event_id"),
+                    })
+
+            # Cas 2 : La cote est introuvable mais le paramètre de secours l'autorise
+            elif not require_value_bet:
+                coupons.append({
+                    "league":          match.get("league"),
+                    "home_team":       match.get("home_team"),
+                    "away_team":       match.get("away_team"),
+                    "match_time":      match.get("match_time"),
+                    "prediction_type": market,
+                    "confidence_rate": confidence,
+                    "odd":             None,
+                    "expected_value":  None,
+                    "is_value_bet":    False,
+                    "status":          match.get("status", "Cote manquante"),
+                    "event_id":        match.get("event_id"),
+                })
 
     return coupons
