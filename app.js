@@ -7,10 +7,6 @@
  */
 
 // ── Config ────────────────────────────────────────────────
-// En production, définis window.ENV_API_BASE avant ce script :
-// <script>window.ENV_API_BASE = "https://ia-betpredict-api.onrender.com";</script>
-// En développement local : http://127.0.0.1:8000
-//|| window.location.origin || "http://127.0.0.1:8000"
 const RENDER_API_URL = "https://plateforme-de-prediction-sportive-ia.onrender.com";
 
 const API_BASE = window.ENV_API_BASE || RENDER_API_URL;
@@ -18,20 +14,20 @@ console.log(`[app] API_BASE=${API_BASE}`);
 
 // Icônes des ligues
 const LEAGUE_FLAGS = {
-  "Veikkausliiga":   "🇫🇮",
-  "Eliteserien":     "🇳🇴",
-  "MLS":             "🇺🇸",
-  "USL Championship": "🇺🇸",
-  "USL League One":   "🇺🇸",
-  "USL League Two":   "🇺🇸",
-  "NPSL":             "🇺🇸",
+  "Veikkausliiga":     "🇫🇮",
+  "Eliteserien":       "🇳🇴",
+  "MLS":               "🇺🇸",
+  "USL Championship":  "🇺🇸",
+  "USL League One":    "🇺🇸",
+  "USL League Two":    "🇺🇸",
+  "NPSL":              "🇺🇸",
   "NPSL Founders Cup": "🇺🇸",
-  "Serie A Brasil":  "🇧🇷",
-  "Club Friendlies": "🤝",
+  "Serie A Brasil":    "🇧🇷",
+  "Club Friendlies":   "🤝",
 };
 
 // ── State ─────────────────────────────────────────────────
-let allCoupons  = [];
+let allCoupons   = [];
 let activeLeague = "all";
 
 // ── DOM ───────────────────────────────────────────────────
@@ -52,9 +48,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 // ── Date header ───────────────────────────────────────────
 function setTodayLabel() {
   const label = document.getElementById("today-label");
-  label.textContent = new Date().toLocaleDateString("fr-FR", {
-    weekday: "short", day: "numeric", month: "short"
-  });
+  if (label) {
+    label.textContent = new Date().toLocaleDateString("fr-FR", {
+      weekday: "short", day: "numeric", month: "short"
+    });
+  }
 }
 
 // ── Fetch coupons ─────────────────────────────────────────
@@ -62,11 +60,12 @@ async function loadCoupons() {
   showState("loading");
 
   try {
-    // 1. Charger les coupons de la base de données
+    // 1. Charger les coupons de la base de données Neon
     const dailyRes = await fetch(`${API_BASE}/coupons`);
     if (!dailyRes.ok) throw new Error(`Erreur coupons (${dailyRes.status})`);
     const dailyData = await dailyRes.json();
-    
+    const dailyCoupons = dailyData.coupons || [];
+
     // 2. Charger le live de manière ISOLEEE (ne bloque pas le reste si échec)
     let liveCoupons = [];
     try {
@@ -79,9 +78,22 @@ async function loadCoupons() {
       console.warn("[app] Live indisponible ou vide :", liveErr);
     }
 
-    // 3. Fusionner les données reçues
-    const dailyCoupons = dailyData.coupons || [];
-    allCoupons = [...dailyCoupons, ...liveCoupons];
+    // 3. Fusionner et dédoublonner (si un match passe en live, la version Live prend le dessus)
+    const couponsMap = new Map();
+
+    // Insérer d'abord les coupons du jour
+    dailyCoupons.forEach(c => {
+      const key = `${c.match_name}_${c.prediction_type}`;
+      couponsMap.set(key, c);
+    });
+
+    // Écraser ou ajouter avec les matchs Live
+    liveCoupons.forEach(c => {
+      const key = `${c.match_name}_${c.prediction_type}`;
+      couponsMap.set(key, c);
+    });
+
+    allCoupons = Array.from(couponsMap.values());
     
     // 4. Mettre à jour l'IHM
     renderCoupons();
@@ -92,7 +104,6 @@ async function loadCoupons() {
     showState("error", `Impossible de joindre l'API. (${err.message})`);
   }
 }
-
 
 // ── Render ────────────────────────────────────────────────
 function renderCoupons() {
@@ -108,7 +119,7 @@ function renderCoupons() {
   showState("grid");
   $grid.innerHTML = filtered.map(couponCard).join("");
 
-  // Animation des barres de confiance
+  // Animation fluide des barres de confiance
   requestAnimationFrame(() => {
     document.querySelectorAll(".confidence-bar-fill").forEach(bar => {
       const w = bar.dataset.width;
@@ -117,16 +128,25 @@ function renderCoupons() {
   });
 }
 
+// ── Helper pour extraire la confiance (0.0 à 1.0) ───────
+function getConfidenceRate(c) {
+  const raw = c.confidence_rate !== undefined ? c.confidence_rate : c.confidence;
+  const num = Number(raw) || 0;
+  // Si déjà en pourcentage (ex: 85), ramener entre 0 et 1
+  return num > 1 ? num / 100 : num;
+}
+
 // ── Card HTML ─────────────────────────────────────────────
 function couponCard(c) {
-  const confidence = Number(c.confidence_rate) || 0;
-  const pct      = Math.round(confidence * 100);
-  const isHigh   = pct >= 70;
-  const tierClass = isHigh ? "tier-high" : "tier-mid";
-  const pctClass  = isHigh ? "high"      : "mid";
-  const barClass  = isHigh ? ""          : "mid";
-  const flag      = LEAGUE_FLAGS[c.league] || "⚽";
+  const confidence = getConfidenceRate(c);
+  const pct        = Math.round(confidence * 100);
+  const isHigh     = pct >= 70;
+  const tierClass  = isHigh ? "tier-high" : "tier-mid";
+  const pctClass   = isHigh ? "high"      : "mid";
+  const barClass   = isHigh ? ""          : "mid";
+  const flag       = LEAGUE_FLAGS[c.league] || "⚽";
   const statusText = typeof c.status === "string" ? c.status : "En attente";
+  
   const score = Number.isFinite(Number(c.home_score)) && Number.isFinite(Number(c.away_score))
     ? ` ${Number(c.home_score)}-${Number(c.away_score)}`
     : "";
@@ -159,7 +179,7 @@ function couponCard(c) {
     <div class="prediction-row">
       <div>
         <div class="prediction-label">Pari recommandé</div>
-        <div class="prediction-type">${escapeHtml(c.prediction_type || "")}</div>
+        <div class="prediction-type">${escapeHtml(c.prediction_type || c.type || "")}</div>
         <span class="status-badge ${statusClass}">${escapeHtml(statusText)}</span>
       </div>
       <div class="confidence-block">
@@ -173,7 +193,7 @@ function couponCard(c) {
 }
 
 function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, char => ({
+  return String(value || "").replace(/[&<>"']/g, char => ({
     "&": "&amp;",
     "<": "&lt;",
     ">": "&gt;",
@@ -185,15 +205,22 @@ function escapeHtml(value) {
 // ── Stats ─────────────────────────────────────────────────
 function updateStats() {
   if (allCoupons.length === 0) {
-    $total.textContent = "0";
-    $avg.textContent   = "—";
-    $best.textContent  = "—";
+    if ($total) $total.textContent = "0";
+    if ($avg)   $avg.textContent   = "—";
+    if ($best)  $best.textContent  = "—";
     return;
   }
-  const rates = allCoupons.map(c => c.confidence_rate);
-  $total.textContent = allCoupons.length;
-  $avg.textContent   = Math.round((rates.reduce((a,b) => a+b, 0) / rates.length) * 100) + "%";
-  $best.textContent  = Math.round(Math.max(...rates) * 100) + "%";
+  
+  // Extraction sécurisée des taux de confiance sous forme numérique
+  const rates = allCoupons.map(c => getConfidenceRate(c));
+  
+  const sum  = rates.reduce((acc, curr) => acc + curr, 0);
+  const max  = Math.max(...rates);
+  const avg  = sum / rates.length;
+
+  if ($total) $total.textContent = allCoupons.length;
+  if ($avg)   $avg.textContent   = Math.round(avg * 100) + "%";
+  if ($best)  $best.textContent  = Math.round(max * 100) + "%";
 }
 
 // ── Filtres ───────────────────────────────────────────────
@@ -210,17 +237,16 @@ function setupFilters() {
 
 // ── UI states ─────────────────────────────────────────────
 function showState(state, message = "") {
-  $loading.style.display = state === "loading" ? "flex"  : "none";
-  $empty.style.display   = state === "empty"   ? "block" : "none";
-  $grid.style.display    = state === "grid"    ? "flex"  : "none";
+  if ($loading) $loading.style.display = state === "loading" ? "flex"  : "none";
+  if ($empty)   $empty.style.display   = state === "empty"   ? "block" : "none";
+  if ($grid)    $grid.style.display    = state === "grid"    ? "grid"  : "none"; // Changé en "grid" si la mise en page CSS utilise un grid
 
   const $err = document.getElementById("error-state");
   if ($err) {
     $err.style.display = state === "error" ? "block" : "none";
-    if (state === "error" && message) $err.querySelector(".error-msg").textContent = message;
+    if (state === "error" && message) {
+      const msgEl = $err.querySelector(".error-msg");
+      if (msgEl) msgEl.textContent = message;
+    }
   }
 }
-
-// ── Données de démo supprimées ────────────────────────────
-// Le frontend affiche désormais une vraie erreur si l'API
-// n'est pas disponible, au lieu de données fictives.

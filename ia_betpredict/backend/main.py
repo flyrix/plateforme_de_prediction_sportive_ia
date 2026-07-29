@@ -1,14 +1,13 @@
 """
 main.py
 -------
-Point d'entrée FastAPI optimisé pour Vercel Serverless & Render.
+Point d'entrée FastAPI optimisé pour Vercel Serverless & GitHub Actions.
 """
 
 import os
 import sys
 import datetime
 
-# Vercel et Render exécutent ce fichier depuis la racine du projet.
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -19,12 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 # Imports locaux
 from scraper import fetch_matches_with_features, fetch_all_matches, fetch_inplay_matches, compute_features
 from predictor import generate_coupons
-from db import execute
+from db import execute, execute_batch
 
-
-# ---------------------------------------------------------------------------
-# Initialisation de l'application FastAPI
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="IA-BetPredict API",
@@ -51,26 +46,31 @@ _ALLOW_UNAUTHENTICATED_ADMIN = os.environ.get("ALLOW_UNAUTHENTICATED_ADMIN", "")
 
 
 # ---------------------------------------------------------------------------
-# La fonction du Job Quotidien (Exécutée par GitHub Actions)
+# Job Quotidien (GitHub Actions)
 # ---------------------------------------------------------------------------
 
 async def daily_prediction_job():
-    """Exécute le cycle complet : Scraping -> Prédiction -> Sauvegarde Neon"""
+    """Exécute le cycle complet : Scraping -> Prédiction sur MATCHS FUTURS -> Sauvegarde Neon"""
     today = datetime.date.today().isoformat()
     print(f"\n[GitHub Actions] ▶ Lancement du job quotidien — {today}")
 
     try:
-        matches = fetch_matches_with_features(today)
+        raw_matches = fetch_matches_with_features(today)
     except Exception as exc:
         print(f"[GitHub Actions] ❌ Erreur scraping : {exc}")
         raise exc
 
-    if not matches:
-        print("[GitHub Actions] Aucun match trouvé pour aujourd'hui sur les ligues cibles.")
+    # 💡 1. FILTRE STRICT : On élimine les matchs déjà commencés (Live)
+    upcoming_matches = [m for m in raw_matches if not m.get("is_live")]
+
+    if not upcoming_matches:
+        print("[GitHub Actions] Aucun match programmé (non démarré) trouvé pour aujourd'hui.")
         return
 
+    print(f"[GitHub Actions] 🎯 {len(upcoming_matches)} match(s) futur(s) retenu(s) pour prédiction.")
+
     all_coupons = []
-    for match in matches:
+    for match in upcoming_matches:
         try:
             coupons = generate_coupons(match)
             all_coupons.extend(coupons)
@@ -81,37 +81,42 @@ async def daily_prediction_job():
         print("[GitHub Actions] Aucun coupon éligible généré.")
         return
 
+    # 💡 2. Préparation des tuples pour insertion dans Neon
     sql = """
         INSERT INTO predictions_history
             (match_date, match_name, league, home_team, away_team,
              match_time, prediction_type, confidence_rate, status)
         VALUES
             (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (match_date, match_name, prediction_type) DO NOTHING
+        ON CONFLICT (match_date, match_name, prediction_type) DO NOTHING;
     """
-    inserted = 0
-    skipped = 0
+    
+    params_list = []
     for c in all_coupons:
-        try:
-            rows = execute(sql, (
-                today,
-                c["match_name"],
-                c["league"],
-                c["home_team"],
-                c["away_team"],
-                c.get("match_time", ""),
-                c["prediction_type"],
-                c["confidence_rate"],
-                c["status"],
-            ))
-            if rows:
-                inserted += 1
-            else:
-                skipped += 1
-        except Exception as exc:
-            print(f"[GitHub Actions] ⚠️ Erreur insertion BDD {c.get('match_name')} : {exc}")
+        confidence = round(float(c["confidence_rate"]), 4)
+        status_val = c.get("status", "En attente")
+        if status_val not in ['En attente', 'Gagné', 'Perdu', 'Annulé']:
+            status_val = 'En attente'
+            
+        params_list.append((
+            today,
+            c["match_name"],
+            c["league"],
+            c["home_team"],
+            c["away_team"],
+            c.get("match_time", ""),
+            c["prediction_type"],
+            confidence,
+            status_val
+        ))
 
-    print(f"[GitHub Actions] ✅ {inserted} coupon(s) insérés, {skipped} doublon(s) ignorés.")
+    # 💡 3. Insertion en 1 seule transaction
+    try:
+        inserted = execute_batch(sql, params_list)
+        print(f"[GitHub Actions] ✅ {inserted} coupon(s) insérés avec succès dans Neon.")
+    except Exception as exc:
+        print(f"[GitHub Actions] ❌ Échec de la transaction BDD Neon : {exc}")
+        raise exc
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +158,7 @@ def _fetch_coupons(match_date: str, league: str | None, min_confidence: float) -
 
 
 # ---------------------------------------------------------------------------
-# Routes / Endpoints
+# Endpoints
 # ---------------------------------------------------------------------------
 
 @app.get("/", tags=["Health"])
@@ -161,17 +166,32 @@ async def root():
     return {"status": "ok", "message": "IA-BetPredict API is running"}
 
 
-@app.post("/run-daily-job", tags=["Admin"])
-async def run_daily_job():
-    """Endpoint désactivé publiquement. Seul GitHub Actions exécute daily_prediction_job()."""
-    return {
-        "status": "disabled",
-        "message": "Cet endpoint est désactivé sur Vercel/Render. Le job est exécuté en local/CLI par GitHub Actions."
-    }
+@app.get("/coupons", tags=["Coupons"])
+async def get_todays_coupons(
+    league: str | None = Query(default=None),
+    min_confidence: float = Query(default=0.0, ge=0, le=1),
+):
+    """C'est cet endpoint que ton frontend doit appeler pour afficher les coupons programmés du jour !"""
+    today = datetime.date.today().isoformat()
+    return _fetch_coupons(today, league, min_confidence)
+
+
+@app.get("/coupons/{date}", tags=["Coupons"])
+async def get_coupons_by_date(
+    date: str,
+    league: str | None = Query(default=None),
+    min_confidence: float = Query(default=0.0, ge=0, le=1),
+):
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format de date invalide. Utilisez YYYY-MM-DD.")
+    return _fetch_coupons(date, league, min_confidence)
 
 
 @app.get("/predictions/live", tags=["Predictions"])
 async def get_live_predictions():
+    """Endpoint secondaire uniquement pour la section 'Matchs en direct' de ton site."""
     try:
         matches = fetch_inplay_matches()
         all_coupons = []
@@ -191,58 +211,3 @@ async def get_live_predictions():
         return {"date": datetime.date.today().isoformat(), "count": len(all_coupons), "coupons": all_coupons}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erreur prédiction live : {exc}")
-
-
-@app.get("/coupons", tags=["Coupons"])
-async def get_todays_coupons(
-    league: str | None = Query(default=None),
-    min_confidence: float = Query(default=0.0, ge=0, le=1),
-):
-    today = datetime.date.today().isoformat()
-    return _fetch_coupons(today, league, min_confidence)
-
-
-@app.get("/coupons/{date}", tags=["Coupons"])
-async def get_coupons_by_date(
-    date: str,
-    league: str | None = Query(default=None),
-    min_confidence: float = Query(default=0.0, ge=0, le=1),
-):
-    try:
-        datetime.date.fromisoformat(date)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Format de date invalide. Utilisez YYYY-MM-DD.")
-    return _fetch_coupons(date, league, min_confidence)
-
-
-@app.patch("/coupons/{coupon_id}/status", tags=["Coupons"])
-async def update_coupon_status(
-    coupon_id: str,
-    status: str = Query(..., pattern="^(Gagné|Perdu|En attente|Annulé)$"),
-    x_cron_secret: str | None = Header(default=None),
-):
-    _verify_cron_secret(x_cron_secret)
-    sql = "UPDATE predictions_history SET status = %s WHERE id = %s::uuid"
-    updated = execute(sql, (status, coupon_id))
-    if not updated:
-        raise HTTPException(status_code=404, detail=f"Coupon {coupon_id} introuvable.")
-    return {"status": "ok", "coupon_id": coupon_id, "new_status": status}
-
-
-@app.get("/matches/today", tags=["Matches"])
-async def get_todays_matches():
-    today = datetime.date.today().isoformat()
-    try:
-        matches = fetch_all_matches(today)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erreur scraping : {exc}")
-    return {"date": today, "count": len(matches), "matches": matches}
-
-
-@app.get("/matches/inplay", tags=["Matches"])
-async def get_inplay_matches():
-    try:
-        matches = fetch_inplay_matches()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erreur inplay scraping : {exc}")
-    return {"date": datetime.date.today().isoformat(), "count": len(matches), "matches": matches}
