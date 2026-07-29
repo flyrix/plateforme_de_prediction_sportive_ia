@@ -30,8 +30,25 @@
     </div>
   </header>
 
-  
- <!-- FILTRES -->
+  <!-- FILTRES DATE & STATUT -->
+  <section class="date-status-bar" style="display:flex; justify-content:center; gap:12px; margin: 16px 0; padding:0 12px; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; gap:6px;">
+      <label for="date-select" style="font-size:14px; font-weight:600; color:#a0aec0;">📅 Date :</label>
+      <input type="date" id="date-select" style="background:#1a202c; color:#fff; border:1px solid #2d3748; padding:6px 10px; border-radius:8px; outline:none;" />
+    </div>
+
+    <div style="display:flex; align-items:center; gap:6px;">
+      <label for="status-filter" style="font-size:14px; font-weight:600; color:#a0aec0;">🎯 Statut :</label>
+      <select id="status-filter" style="background:#1a202c; color:#fff; border:1px solid #2d3748; padding:6px 10px; border-radius:8px; outline:none;">
+        <option value="">Tous</option>
+        <option value="En attente">En attente ⏳</option>
+        <option value="Gagné">Gagné 🟢</option>
+        <option value="Perdu">Perdu 🔴</option>
+      </select>
+    </div>
+  </section>
+
+  <!-- FILTRES DE LIGUES -->
   <section class="filters">
     <div class="filters-inner" id="filters-container">
       <button class="filter-btn active" data-league="all">Toutes</button>
@@ -64,8 +81,8 @@
     </div>
     <div id="empty" class="empty-state" style="display:none">
       <p class="empty-icon">🔍</p>
-      <p>Aucun coupon éligible pour aujourd'hui.</p>
-      <p class="empty-sub">Les seuils de confiance n'ont pas été atteints.</p>
+      <p>Aucun coupon trouvé pour cette sélection.</p>
+      <p class="empty-sub">Essaie de changer la date ou le filtre de statut.</p>
     </div>
     <div id="error-state" class="empty-state" style="display:none">
       <p class="empty-icon">⚠️</p>
@@ -80,7 +97,6 @@
     <p>Prédictions générées par XGBoost · Usage éducatif uniquement</p>
   </footer>
 
-  
   <script>window.ENV_API_BASE = "https://plateforme-de-prediction-sportive-ia.onrender.com";</script>
   <script src="app.js"></script>
 </body>

@@ -1,6 +1,6 @@
 /**
  * app.js — IA-BetPredict Frontend
- * Mode 100% BDD Neon + Filtres Dynamiques & Sécurisés
+ * Mode 100% BDD Neon + Filtres Dynamiques & Affichage du Score
  */
 
 const RENDER_API_URL = "https://plateforme-de-prediction-sportive-ia.onrender.com";
@@ -22,15 +22,18 @@ const LEAGUE_FLAGS = {
 
 let allCoupons   = [];
 let activeLeague = "all";
+let activeDate   = new Date().toISOString().split("T")[0];
+let activeStatus = "";
 
-const $loading = document.getElementById("loading");
-const $empty   = document.getElementById("empty");
-const $grid    = document.getElementById("coupons-grid");
-const $total   = document.getElementById("stat-total");
-const $avg     = document.getElementById("stat-avg");
-const $best    = document.getElementById("stat-best");
+const $loading      = document.getElementById("loading");
+const $empty        = document.getElementById("empty");
+const $grid         = document.getElementById("coupons-grid");
+const $total        = document.getElementById("stat-total");
+const $avg          = document.getElementById("stat-avg");
+const $best         = document.getElementById("stat-best");
+const $dateInput    = document.getElementById("date-select");
+const $statusSelect = document.getElementById("status-filter");
 
-// Récupération sécurisée du conteneur de filtres (par ID ou par Classe)
 function getFiltersContainer() {
   return document.getElementById("filters-container") || document.querySelector(".filters-inner");
 }
@@ -38,17 +41,37 @@ function getFiltersContainer() {
 document.addEventListener("DOMContentLoaded", async () => {
   setTodayLabel();
   setupFilterDelegation();
+  setupControls();
+
+  if ($dateInput) {
+    $dateInput.value = activeDate;
+  }
+
   await loadCoupons();
 });
 
-// Helper pour vérifier si une ligue fait partie des championnats américains
+function setupControls() {
+  if ($dateInput) {
+    $dateInput.addEventListener("change", (e) => {
+      activeDate = e.target.value;
+      loadCoupons();
+    });
+  }
+
+  if ($statusSelect) {
+    $statusSelect.addEventListener("change", (e) => {
+      activeStatus = e.target.value;
+      loadCoupons();
+    });
+  }
+}
+
 function isUSALeague(leagueName) {
   if (!leagueName) return false;
   const l = String(leagueName).toUpperCase();
   return l.includes("MLS") || l.includes("USL") || l.includes("NPSL") || l.includes("USA");
 }
 
-// ── Delegated Event Listener pour les Filtres ────────────
 function setupFilterDelegation() {
   const container = getFiltersContainer();
   if (!container) return;
@@ -57,17 +80,14 @@ function setupFilterDelegation() {
     const btn = e.target.closest(".filter-btn");
     if (!btn) return;
 
-    // Retirer 'active' de tous les boutons et l'ajouter au bouton cliqué
     container.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
 
-    // Mettre à jour la ligue active et relancer le rendu
     activeLeague = btn.dataset.league;
     renderCoupons();
   });
 }
 
-// ── Fetch optimisé avec Retry ─────────────────────────────
 async function fetchWithRetry(url, options = {}, retries = 3, backoff = 2000, timeoutMs = 35000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -112,12 +132,16 @@ function setTodayLabel() {
   }
 }
 
-// ── Chargement BDD & Génération des Filtres ───────────────
 async function loadCoupons() {
   showState("loading");
 
   try {
-    const dailyData = await fetchWithRetry(`${API_BASE}/coupons`, {}, 3, 2000, 35000);
+    let url = `${API_BASE}/coupons/${activeDate}`;
+    if (activeStatus) {
+      url += `?status=${encodeURIComponent(activeStatus)}`;
+    }
+
+    const dailyData = await fetchWithRetry(url, {}, 3, 2000, 35000);
     allCoupons = dailyData.coupons || [];
 
     generateDynamicFilters();
@@ -130,7 +154,6 @@ async function loadCoupons() {
   }
 }
 
-// ── Génération Dynamique des Boutons de Filtre ───────────
 function generateDynamicFilters() {
   const container = getFiltersContainer();
   if (!container) return;
@@ -161,7 +184,6 @@ function generateDynamicFilters() {
   container.innerHTML = buttonsHtml;
 }
 
-// ── Filtrage et Rendu de la Grille ───────────────────────
 function renderCoupons() {
   let filtered = allCoupons;
 
@@ -211,6 +233,13 @@ function couponCard(c) {
     "Annulé":     "annule",
   }[statusText] || "attente";
 
+  // Détection du Score : remplace "VS" si présent
+  const hasScore = c.score || (c.home_score !== undefined && c.away_score !== undefined && c.home_score !== null);
+  const scoreDisplay = c.score || `${c.home_score} - ${c.away_score}`;
+  const centerLabel = hasScore 
+    ? `<span class="score-badge" style="background:#2d3748; color:#00ff88; font-weight:bold; padding:2px 8px; border-radius:6px;">${escapeHtml(scoreDisplay)}</span>`
+    : `<span class="vs-label">VS</span>`;
+
   return `
   <div class="coupon-card ${tierClass}">
     <div class="coupon-header">
@@ -220,7 +249,7 @@ function couponCard(c) {
   
     <div class="teams-row">
       <span class="team-name home">${escapeHtml(c.home_team || "")}</span>
-      <span class="vs-label">VS</span>
+      ${centerLabel}
       <span class="team-name away">${escapeHtml(c.away_team || "")}</span>
     </div>
 
