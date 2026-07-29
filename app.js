@@ -1,17 +1,11 @@
 /**
  * app.js — IA-BetPredict Frontend
- *
- * 1. Charge rapidement les coupons du jour depuis l'API FastAPI (Neon BDD)
- * 2. Charge les événements LIVE en arrière-plan (non bloquant)
- * 3. Affiche les cartes avec jauge de confiance et gère les filtres par ligue
  */
 
-// ── Config ────────────────────────────────────────────────
 const RENDER_API_URL = "https://plateforme-de-prediction-sportive-ia.onrender.com";
 const API_BASE = window.ENV_API_BASE || RENDER_API_URL;
 console.log(`[app] API_BASE=${API_BASE}`);
 
-// Icônes des ligues
 const LEAGUE_FLAGS = {
   "Veikkausliiga":     "🇫🇮",
   "Eliteserien":       "🇳🇴",
@@ -25,11 +19,9 @@ const LEAGUE_FLAGS = {
   "Club Friendlies":   "🤝",
 };
 
-// ── State ─────────────────────────────────────────────────
 let allCoupons   = [];
 let activeLeague = "all";
 
-// ── DOM ───────────────────────────────────────────────────
 const $loading = document.getElementById("loading");
 const $empty   = document.getElementById("empty");
 const $grid    = document.getElementById("coupons-grid");
@@ -37,19 +29,18 @@ const $total   = document.getElementById("stat-total");
 const $avg     = document.getElementById("stat-avg");
 const $best    = document.getElementById("stat-best");
 
-// ── Init ──────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
   setTodayLabel();
   setupFilters();
   await loadCoupons();
 });
 
-// ── Helper Fetch avec Retry & Timeout paramétrable ────────
-async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, timeoutMs = 25000) {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+// ── Fetch avec Retry & Timeout corrigé ────────────────────
+async function fetchWithRetry(url, options = {}, retries = 3, backoff = 2000, timeoutMs = 35000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+  try {
     const response = await fetch(url, {
       ...options,
       signal: controller.signal,
@@ -68,16 +59,21 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, ti
 
     return await response.json();
   } catch (err) {
-    if (retries > 0 && err.name !== 'AbortError') {
-      console.warn(`[app] Tentative de connexion au serveur (${retries} réessais restants)...`);
+    clearTimeout(timeoutId);
+
+    // Si on a encore des retries, on retente MEME en cas d'AbortError (Timeout Render)
+    if (retries > 0) {
+      const isTimeout = err.name === 'AbortError';
+      console.warn(`[app] ${isTimeout ? 'Timeout dépassé' : 'Erreur réseau'}. Nouvelle tentative (${retries} restante(s))...`);
+      
       await new Promise(resolve => setTimeout(resolve, backoff));
       return fetchWithRetry(url, options, retries - 1, backoff * 1.5, timeoutMs);
     }
+    
     throw err;
   }
 }
 
-// ── Date header ───────────────────────────────────────────
 function setTodayLabel() {
   const label = document.getElementById("today-label");
   if (label) {
@@ -87,35 +83,33 @@ function setTodayLabel() {
   }
 }
 
-// ── Fetch coupons ─────────────────────────────────────────
+// ── Load Coupons ──────────────────────────────────────────
 async function loadCoupons() {
   showState("loading");
 
   try {
-    // 1. Charger PRIORITAIREMENT les coupons enregistrés en BDD Neon (Ultra-rapide)
-    const dailyData = await fetchWithRetry(`${API_BASE}/coupons`, {}, 3, 3000, 25000);
+    // Premier appel vers /coupons (BDD Neon) avec 35s de timeout
+    const dailyData = await fetchWithRetry(`${API_BASE}/coupons`, {}, 3, 2000, 35000);
     const dailyCoupons = dailyData.coupons || [];
 
-    // Afficher immédiatement les coupons enregistrés
     allCoupons = [...dailyCoupons];
     renderCoupons();
     updateStats();
 
   } catch (err) {
     console.error("[app] Erreur lors du chargement BDD Neon :", err);
-    showState("error", `Impossible de joindre l'API. Le serveur Render met du temps à démarrer. (${err.message})`);
+    showState("error", `Le serveur Render met du temps à démarrer. Veuillez rafraîchir dans quelques secondes.`);
     return;
   }
 
-  // 2. Charger le LIVE en ARRIÈRE-PLAN (de façon asynchrone et non-bloquante)
+  // Chargement du Live en arrière-plan
   fetchLiveBackground();
 }
 
-// ── Chargement asynchrone du Live en arrière-plan ────────
 async function fetchLiveBackground() {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 secondes max pour le live
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const liveRes = await fetch(`${API_BASE}/predictions/live`, {
       signal: controller.signal,
@@ -131,20 +125,18 @@ async function fetchLiveBackground() {
       if (liveCoupons.length > 0) {
         const couponsMap = new Map();
 
-        // Insérer d'abord les coupons du jour
         allCoupons.forEach(c => {
           const key = `${c.match_name}_${c.prediction_type}`;
           couponsMap.set(key, c);
         });
 
-        // Ajouter / écraser avec les matchs Live
         liveCoupons.forEach(c => {
           const key = `${c.match_name}_${c.prediction_type}`;
           couponsMap.set(key, c);
         });
 
         allCoupons = Array.from(couponsMap.values());
-        renderCoupons(); // Mettre à jour l'affichage avec les lives
+        renderCoupons();
         updateStats();
       }
     }
@@ -153,7 +145,7 @@ async function fetchLiveBackground() {
   }
 }
 
-// ── Render ────────────────────────────────────────────────
+// ── Affichage & Helpers ───────────────────────────────────
 function renderCoupons() {
   const filtered = activeLeague === "all"
     ? allCoupons
@@ -175,14 +167,12 @@ function renderCoupons() {
   });
 }
 
-// ── Helper pour extraire la confiance (0.0 à 1.0) ───────
 function getConfidenceRate(c) {
   const raw = c.confidence_rate !== undefined ? c.confidence_rate : c.confidence;
   const num = Number(raw) || 0;
   return num > 1 ? num / 100 : num;
 }
 
-// ── Card HTML ─────────────────────────────────────────────
 function couponCard(c) {
   const confidence = getConfidenceRate(c);
   const pct        = Math.round(confidence * 100);
@@ -248,7 +238,6 @@ function escapeHtml(value) {
   }[char]));
 }
 
-// ── Stats ─────────────────────────────────────────────────
 function updateStats() {
   if (allCoupons.length === 0) {
     if ($total) $total.textContent = "0";
@@ -267,7 +256,6 @@ function updateStats() {
   if ($best)  $best.textContent  = Math.round(max * 100) + "%";
 }
 
-// ── Filtres ───────────────────────────────────────────────
 function setupFilters() {
   document.querySelectorAll(".filter-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -279,7 +267,6 @@ function setupFilters() {
   });
 }
 
-// ── UI states ─────────────────────────────────────────────
 function showState(state, message = "") {
   if ($loading) $loading.style.display = state === "loading" ? "flex"  : "none";
   if ($empty)   $empty.style.display   = state === "empty"   ? "block" : "none";
