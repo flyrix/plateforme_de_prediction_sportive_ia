@@ -1,5 +1,6 @@
 /**
  * app.js — IA-BetPredict Frontend
+ * Mode 100% BDD Neon + Filtres Dynamiques & Regroupement USA
  */
 
 const RENDER_API_URL = "https://plateforme-de-prediction-sportive-ia.onrender.com";
@@ -7,14 +8,14 @@ const API_BASE = window.ENV_API_BASE || RENDER_API_URL;
 console.log(`[app] API_BASE=${API_BASE}`);
 
 const LEAGUE_FLAGS = {
-  "Veikkausliiga":     "🇫🇮",
-  "Eliteserien":       "🇳🇴",
+  "USA":               "🇺🇸",
   "MLS":               "🇺🇸",
   "USL Championship":  "🇺🇸",
   "USL League One":    "🇺🇸",
   "USL League Two":    "🇺🇸",
   "NPSL":              "🇺🇸",
-  "NPSL Founders Cup": "🇺🇸",
+  "Veikkausliiga":     "🇫🇮",
+  "Eliteserien":       "🇳🇴",
   "Serie A Brasil":    "🇧🇷",
   "Club Friendlies":   "🤝",
 };
@@ -22,20 +23,27 @@ const LEAGUE_FLAGS = {
 let allCoupons   = [];
 let activeLeague = "all";
 
-const $loading = document.getElementById("loading");
-const $empty   = document.getElementById("empty");
-const $grid    = document.getElementById("coupons-grid");
-const $total   = document.getElementById("stat-total");
-const $avg     = document.getElementById("stat-avg");
-const $best    = document.getElementById("stat-best");
+const $loading          = document.getElementById("loading");
+const $empty            = document.getElementById("empty");
+const $grid             = document.getElementById("coupons-grid");
+const $total            = document.getElementById("stat-total");
+const $avg              = document.getElementById("stat-avg");
+const $best             = document.getElementById("stat-best");
+const $filtersContainer = document.getElementById("filters-container");
 
 document.addEventListener("DOMContentLoaded", async () => {
   setTodayLabel();
-  setupFilters();
   await loadCoupons();
 });
 
-// ── Fetch avec Retry & Timeout corrigé ────────────────────
+// Helper pour vérifier si une ligue fait partie des championnats américains
+function isUSALeague(leagueName) {
+  if (!leagueName) return false;
+  const l = leagueName.toUpperCase();
+  return l.includes("MLS") || l.includes("USL") || l.includes("NPSL") || l.includes("USA");
+}
+
+// ── Fetch optimisé avec Retry ─────────────────────────────
 async function fetchWithRetry(url, options = {}, retries = 3, backoff = 2000, timeoutMs = 35000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -61,11 +69,8 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 2000, ti
   } catch (err) {
     clearTimeout(timeoutId);
 
-    // Si on a encore des retries, on retente MEME en cas d'AbortError (Timeout Render)
     if (retries > 0) {
-      const isTimeout = err.name === 'AbortError';
-      console.warn(`[app] ${isTimeout ? 'Timeout dépassé' : 'Erreur réseau'}. Nouvelle tentative (${retries} restante(s))...`);
-      
+      console.warn(`[app] Connexion BDD... Nouvelle tentative (${retries} restante(s)).`);
       await new Promise(resolve => setTimeout(resolve, backoff));
       return fetchWithRetry(url, options, retries - 1, backoff * 1.5, timeoutMs);
     }
@@ -83,73 +88,75 @@ function setTodayLabel() {
   }
 }
 
-// ── Load Coupons ──────────────────────────────────────────
+// ── Chargement BDD & Génération des Filtres ───────────────
 async function loadCoupons() {
   showState("loading");
 
   try {
-    // Premier appel vers /coupons (BDD Neon) avec 35s de timeout
     const dailyData = await fetchWithRetry(`${API_BASE}/coupons`, {}, 3, 2000, 35000);
-    const dailyCoupons = dailyData.coupons || [];
+    allCoupons = dailyData.coupons || [];
 
-    allCoupons = [...dailyCoupons];
+    generateDynamicFilters();
     renderCoupons();
     updateStats();
 
   } catch (err) {
-    console.error("[app] Erreur lors du chargement BDD Neon :", err);
-    showState("error", `Le serveur Render met du temps à démarrer. Veuillez rafraîchir dans quelques secondes.`);
-    return;
+    console.error("[app] Erreur de chargement :", err);
+    showState("error", "Le serveur prend du temps à répondre. Veuillez rafraîchir la page dans un instant.");
   }
-
-  // Chargement du Live en arrière-plan
-  fetchLiveBackground();
 }
 
-async function fetchLiveBackground() {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+// ── Génération Dynamique des Boutons de Filtre ───────────
+function generateDynamicFilters() {
+  if (!$filtersContainer) return;
 
-    const liveRes = await fetch(`${API_BASE}/predictions/live`, {
-      signal: controller.signal,
-      headers: { 'Accept': 'application/json' }
-    });
+  const leagues = new Set();
+  let hasUSA = false;
 
-    clearTimeout(timeoutId);
-
-    if (liveRes.ok) {
-      const liveData = await liveRes.json();
-      const liveCoupons = liveData.coupons || [];
-
-      if (liveCoupons.length > 0) {
-        const couponsMap = new Map();
-
-        allCoupons.forEach(c => {
-          const key = `${c.match_name}_${c.prediction_type}`;
-          couponsMap.set(key, c);
-        });
-
-        liveCoupons.forEach(c => {
-          const key = `${c.match_name}_${c.prediction_type}`;
-          couponsMap.set(key, c);
-        });
-
-        allCoupons = Array.from(couponsMap.values());
-        renderCoupons();
-        updateStats();
-      }
+  allCoupons.forEach(c => {
+    if (isUSALeague(c.league)) {
+      hasUSA = true;
+    } else if (c.league) {
+      leagues.add(c.league);
     }
-  } catch (liveErr) {
-    console.warn("[app] Live ignoré ou trop lent :", liveErr.message);
+  });
+
+  let buttonsHtml = `<button class="filter-btn ${activeLeague === 'all' ? 'active' : ''}" data-league="all">Toutes</button>`;
+
+  if (hasUSA) {
+    buttonsHtml += `<button class="filter-btn ${activeLeague === 'USA' ? 'active' : ''}" data-league="USA">🇺🇸 USA</button>`;
   }
+
+  Array.from(leagues).sort().forEach(league => {
+    const flag = LEAGUE_FLAGS[league] || "⚽";
+    const isActive = activeLeague === league ? "active" : "";
+    buttonsHtml += `<button class="filter-btn ${isActive}" data-league="${escapeHtml(league)}">${flag} ${escapeHtml(league)}</button>`;
+  });
+
+  $filtersContainer.innerHTML = buttonsHtml;
+  setupFilters();
 }
 
-// ── Affichage & Helpers ───────────────────────────────────
+function setupFilters() {
+  document.querySelectorAll(".filter-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeLeague = btn.dataset.league;
+      renderCoupons();
+    });
+  });
+}
+
+// ── Filtrage et Rendu de la Grille ───────────────────────
 function renderCoupons() {
-  const filtered = activeLeague === "all"
-    ? allCoupons
-    : allCoupons.filter(c => c.league === activeLeague);
+  let filtered = allCoupons;
+
+  if (activeLeague === "USA") {
+    filtered = allCoupons.filter(c => isUSALeague(c.league));
+  } else if (activeLeague !== "all") {
+    filtered = allCoupons.filter(c => c.league === activeLeague);
+  }
 
   if (filtered.length === 0) {
     showState("empty");
@@ -180,16 +187,10 @@ function couponCard(c) {
   const tierClass  = isHigh ? "tier-high" : "tier-mid";
   const pctClass   = isHigh ? "high"      : "mid";
   const barClass   = isHigh ? ""          : "mid";
-  const flag       = LEAGUE_FLAGS[c.league] || "⚽";
+  const flag       = LEAGUE_FLAGS[c.league] || (isUSALeague(c.league) ? "🇺🇸" : "⚽");
+  
   const statusText = typeof c.status === "string" ? c.status : "En attente";
   
-  const score = Number.isFinite(Number(c.home_score)) && Number.isFinite(Number(c.away_score))
-    ? ` ${Number(c.home_score)}-${Number(c.away_score)}`
-    : "";
-
-  const isLive = Boolean(c.is_live);
-  const liveBadge = isLive ? `<span class="live-badge">🔴 LIVE${score}</span>` : "";
-
   const statusClass = {
     "En attente": "attente",
     "Gagné":      "gagne",
@@ -201,7 +202,7 @@ function couponCard(c) {
   <div class="coupon-card ${tierClass}">
     <div class="coupon-header">
       <span class="league-badge">${flag} ${escapeHtml(c.league || "")}</span>
-      <span class="match-time">${liveBadge || escapeHtml(c.match_time || "--:--")}</span>
+      <span class="match-time">${escapeHtml(c.match_time || "--:--")}</span>
     </div>
   
     <div class="teams-row">
@@ -254,17 +255,6 @@ function updateStats() {
   if ($total) $total.textContent = allCoupons.length;
   if ($avg)   $avg.textContent   = Math.round(avg * 100) + "%";
   if ($best)  $best.textContent  = Math.round(max * 100) + "%";
-}
-
-function setupFilters() {
-  document.querySelectorAll(".filter-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      activeLeague = btn.dataset.league;
-      renderCoupons();
-    });
-  });
 }
 
 function showState(state, message = "") {

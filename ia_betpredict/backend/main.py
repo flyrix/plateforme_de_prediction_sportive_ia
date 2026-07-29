@@ -1,7 +1,7 @@
 """
 main.py
 -------
-Point d'entrée FastAPI optimisé pour Vercel Serverless, Render & GitHub Actions.
+API FastAPI optimisée pour Vercel & Render (Mode 100% BDD Neon / Zero ScraperAPI en Live).
 """
 
 import os
@@ -17,24 +17,17 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 # Imports locaux
-from scraper import fetch_matches_with_features, _get, BASE_URL, fetch_inplay_matches, compute_features
+from scraper import fetch_matches_with_features, _get, BASE_URL
 from predictor import generate_coupons
 from db import execute, execute_batch
 
 app = FastAPI(
     title="IA-BetPredict API",
-    description="Prédictions sportives par XGBoost sur ligues cibles",
-    version="1.0.0",
+    description="Prédictions sportives par XGBoost - Historique et Résultats",
+    version="1.1.0",
 )
 
-# ---------------------------------------------------------------------------
-# Configuration CORS permissive pour Render & Vercel
-# ---------------------------------------------------------------------------
-_allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*")
-_CORS_ORIGINS = [origin.strip() for origin in _allowed_origins.split(",") if origin.strip()]
-if not _CORS_ORIGINS or "*" in _CORS_ORIGINS:
-    _CORS_ORIGINS = ["*"]
-
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,7 +39,6 @@ app.add_middleware(
 
 @app.options("/{full_path:path}")
 async def options_handler(request: Request, full_path: str):
-    """Intercepte et valide directement les requêtes de contrôle préalable (Preflight OPTIONS)."""
     return Response(
         status_code=200,
         headers={
@@ -56,35 +48,82 @@ async def options_handler(request: Request, full_path: str):
         },
     )
 
-_CRON_SECRET = os.environ.get("CRON_SECRET", "")
-_ALLOW_UNAUTHENTICATED_ADMIN = os.environ.get("ALLOW_UNAUTHENTICATED_ADMIN", "").lower() in {
-    "1", "true", "yes", "on"
-}
+
+# ---------------------------------------------------------------------------
+# Endpoints BDD (Lecture ultra-rapide)
+# ---------------------------------------------------------------------------
+
+@app.get("/", tags=["Health"])
+async def root():
+    return {"status": "ok", "message": "IA-BetPredict API is running"}
+
+
+@app.get("/coupons", tags=["Coupons"])
+async def get_todays_coupons(
+    league: str | None = Query(default=None),
+    min_confidence: float = Query(default=0.0, ge=0, le=1),
+):
+    """Récupère les coupons du jour stockés en base Neon."""
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    return _fetch_coupons(today, league, min_confidence)
+
+
+@app.get("/coupons/{date}", tags=["Coupons"])
+async def get_coupons_by_date(
+    date: str,
+    league: str | None = Query(default=None),
+    min_confidence: float = Query(default=0.0, ge=0, le=1),
+):
+    """Récupère les coupons d'une date spécifique (ex: résultats d'hier)."""
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format de date invalide. Utilisez YYYY-MM-DD.")
+    return _fetch_coupons(date, league, min_confidence)
+
+
+def _fetch_coupons(match_date: str, league: str | None, min_confidence: float) -> dict:
+    try:
+        if league:
+            sql = """
+                SELECT * FROM predictions_history
+                WHERE match_date = %s AND confidence_rate >= %s AND league = %s
+                ORDER BY confidence_rate DESC
+            """
+            rows = execute(sql, (match_date, min_confidence, league), fetch=True)
+        else:
+            sql = """
+                SELECT * FROM predictions_history
+                WHERE match_date = %s AND confidence_rate >= %s
+                ORDER BY confidence_rate DESC
+            """
+            rows = execute(sql, (match_date, min_confidence), fetch=True)
+
+        return {"date": match_date, "count": len(rows), "coupons": rows}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erreur Neon : {exc}")
 
 
 # ---------------------------------------------------------------------------
-# Job Quotidien et Settler
+# Jobs d'arrière-plan (Exécutés uniquement par Cron / GitHub Actions)
 # ---------------------------------------------------------------------------
 
 async def daily_prediction_job():
-    """Exécute le cycle complet : Scraping -> Prédiction sur MATCHS FUTURS -> Sauvegarde Neon"""
+    """Génération des prédictions (exécuté par GitHub Actions)."""
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    print(f"\n[GitHub Actions] ▶ Lancement du job quotidien — {today}")
+    print(f"\n[Cron] ▶ Lancement de la génération des prédictions — {today}")
 
     try:
         raw_matches = fetch_matches_with_features(today)
     except Exception as exc:
-        print(f"[GitHub Actions] ❌ Erreur scraping : {exc}")
+        print(f"[Cron] ❌ Erreur scraping : {exc}")
         raise exc
 
-    # Matchs réellement non démarrés
     upcoming_matches = [m for m in raw_matches if m.get("status") == "notstarted"]
 
     if not upcoming_matches:
-        print(f"[GitHub Actions] Aucun match programmé ('notstarted') trouvé pour aujourd'hui ({today}).")
+        print(f"[Cron] Aucun match 'notstarted' trouvé pour {today}.")
         return
-
-    print(f"[GitHub Actions] 🎯 {len(upcoming_matches)} match(s) futur(s) retenu(s) pour prédiction.")
 
     all_coupons = []
     for match in upcoming_matches:
@@ -94,13 +133,12 @@ async def daily_prediction_job():
                 c["event_id"] = match["event_id"]
             all_coupons.extend(coupons)
         except Exception as exc:
-            print(f"[GitHub Actions] ⚠️ Erreur prédiction {match.get('match_name')} : {exc}")
+            print(f"[Cron] ⚠️ Erreur prédiction {match.get('match_name')} : {exc}")
 
     if not all_coupons:
-        print("[GitHub Actions] Aucun coupon éligible généré par le modèle.")
+        print("[Cron] Aucun coupon généré.")
         return
 
-    # Respect strict du schéma predictions_history
     sql = """
         INSERT INTO predictions_history
             (match_date, match_name, league, home_team, away_team,
@@ -127,15 +165,15 @@ async def daily_prediction_job():
 
     try:
         inserted = execute_batch(sql, params_list)
-        print(f"[GitHub Actions] ✅ {inserted} coupon(s) insérés avec succès dans Neon.")
+        print(f"[Cron] ✅ {inserted} coupon(s) insérés avec succès.")
     except Exception as exc:
-        print(f"[GitHub Actions] ❌ Échec de la transaction BDD Neon : {exc}")
+        print(f"[Cron] ❌ Échec transaction BDD : {exc}")
         raise exc
 
 
 async def settle_finished_predictions():
-    """Parcourt les coupons en attente en BDD et met à jour leur statut ('Gagné' / 'Perdu')."""
-    print("\n[Settler] 🔄 Vérification des coupons en attente...")
+    """Vérification et mise à jour du statut ('Gagné' / 'Perdu') des matchs terminés."""
+    print("\n[Settler] 🔄 Mise à jour des résultats (Gagné / Perdu)...")
     
     pending = execute(
         "SELECT id, match_name, match_date, prediction_type FROM predictions_history WHERE status = 'En attente'", 
@@ -143,7 +181,7 @@ async def settle_finished_predictions():
     )
     
     if not pending:
-        print("[Settler] Aucun coupon en attente de résultat.")
+        print("[Settler] Aucun coupon en attente.")
         return
 
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -193,95 +231,9 @@ async def settle_finished_predictions():
             print(f"[Settler] Coupon #{p['id']} ({p['match_name']} - {pred}) -> {status_val}")
 
 
-# ---------------------------------------------------------------------------
-# Endpoints FastAPI
-# ---------------------------------------------------------------------------
-
-@app.get("/", tags=["Health"])
-async def root():
-    return {"status": "ok", "message": "IA-BetPredict API is running"}
-
-
-@app.get("/coupons", tags=["Coupons"])
-async def get_todays_coupons(
-    league: str | None = Query(default=None),
-    min_confidence: float = Query(default=0.0, ge=0, le=1),
-):
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    return _fetch_coupons(today, league, min_confidence)
-
-
-@app.get("/coupons/{date}", tags=["Coupons"])
-async def get_coupons_by_date(
-    date: str,
-    league: str | None = Query(default=None),
-    min_confidence: float = Query(default=0.0, ge=0, le=1),
-):
-    try:
-        datetime.date.fromisoformat(date)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Format de date invalide. Utilisez YYYY-MM-DD.")
-    return _fetch_coupons(date, league, min_confidence)
-
-
-def _fetch_coupons(match_date: str, league: str | None, min_confidence: float) -> dict:
-    try:
-        if league:
-            sql = """
-                SELECT * FROM predictions_history
-                WHERE match_date = %s AND confidence_rate >= %s AND league = %s
-                ORDER BY confidence_rate DESC
-            """
-            rows = execute(sql, (match_date, min_confidence, league), fetch=True)
-        else:
-            sql = """
-                SELECT * FROM predictions_history
-                WHERE match_date = %s AND confidence_rate >= %s
-                ORDER BY confidence_rate DESC
-            """
-            rows = execute(sql, (match_date, min_confidence), fetch=True)
-
-        return {"date": match_date, "count": len(rows), "coupons": rows}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erreur Neon : {exc}")
-
-
-@app.get("/predictions/live", tags=["Predictions"])
-async def get_live_predictions():
-    try:
-        matches = fetch_inplay_matches()
-        all_coupons = []
-        
-        for match in matches:
-            match["features"] = compute_features(match)
-            coupons = generate_coupons(match)
-            for coupon in coupons:
-                coupon.update({
-                    "is_live": True,
-                    "live_status": match.get("live_status"),
-                    "home_score": match.get("home_score"),
-                    "away_score": match.get("away_score"),
-                })
-            all_coupons.extend(coupons)
-            
-        return {
-            "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"), 
-            "count": len(all_coupons), 
-            "coupons": all_coupons
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Erreur prédiction live : {exc}")
-
-
-# ---------------------------------------------------------------------------
-# Exécution CLI (GitHub Actions / Local)
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     async def run_cron():
-        print("🚀 Lancement du cycle quotidien de prédictions...")
         await daily_prediction_job()
         await settle_finished_predictions()
-        print("✅ Cycle terminé.")
 
     asyncio.run(run_cron())
