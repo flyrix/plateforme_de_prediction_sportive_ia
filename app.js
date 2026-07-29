@@ -1,6 +1,6 @@
 /**
  * app.js — IA-BetPredict Frontend
- * Mode 100% BDD Neon + Filtres Dynamiques & Regroupement USA
+ * Mode 100% BDD Neon + Filtres Dynamiques (Fix Clic Filtres)
  */
 
 const RENDER_API_URL = "https://plateforme-de-prediction-sportive-ia.onrender.com";
@@ -33,6 +33,7 @@ const $filtersContainer = document.getElementById("filters-container");
 
 document.addEventListener("DOMContentLoaded", async () => {
   setTodayLabel();
+  setupFilterDelegation(); // 👈 Écouteur global sur le conteneur des filtres
   await loadCoupons();
 });
 
@@ -41,6 +42,24 @@ function isUSALeague(leagueName) {
   if (!leagueName) return false;
   const l = leagueName.toUpperCase();
   return l.includes("MLS") || l.includes("USL") || l.includes("NPSL") || l.includes("USA");
+}
+
+// ── Delegated Event Listener pour les Filtres ────────────
+function setupFilterDelegation() {
+  if (!$filtersContainer) return;
+
+  $filtersContainer.addEventListener("click", (e) => {
+    const btn = e.target.closest(".filter-btn");
+    if (!btn) return;
+
+    // Mise à jour de l'état actif sur les boutons
+    $filtersContainer.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+
+    // Mise à jour du filtre actif et rendu de la grille
+    activeLeague = btn.dataset.league;
+    renderCoupons();
+  });
 }
 
 // ── Fetch optimisé avec Retry ─────────────────────────────
@@ -134,18 +153,6 @@ function generateDynamicFilters() {
   });
 
   $filtersContainer.innerHTML = buttonsHtml;
-  setupFilters();
-}
-
-function setupFilters() {
-  document.querySelectorAll(".filter-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      activeLeague = btn.dataset.league;
-      renderCoupons();
-    });
-  });
 }
 
 // ── Filtrage et Rendu de la Grille ───────────────────────
