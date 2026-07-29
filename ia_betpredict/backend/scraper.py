@@ -8,13 +8,13 @@ Optimisé pour réduire au maximum la consommation de crédits ScraperAPI et év
 import datetime
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from curl_cffi import requests
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
 
 BASE_URL = "https://api.sofascore.com/api/v1"
 
@@ -34,7 +34,6 @@ LEAGUE_IDS = {
 
 LEAGUE_ID_TO_NAME = {tid: name for name, tid in LEAGUE_IDS.items()}
 
-# ID de saison en dur pour ÉVITER 1 appel API inutile par ligue
 SEASON_OVERRIDES: dict[int, int] = {}
 
 FORM_WINDOW = 5
@@ -47,11 +46,10 @@ SESSION.trust_env = False
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Referer": "https://www.sofascore.com/",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Cache mémoire pour éviter de payer 2 fois la même URL durant le même job
 CACHE = {}
 
 # ---------------------------------------------------------------------------
@@ -66,11 +64,13 @@ def _get(url: str, retries: int = 2) -> dict | None:
         print("[scraper] ❌ Pas de SCRAPER_API_KEY configurée. Requête annulée.")
         return None
 
+    # country_code=us garantit un proxy clean évitant la censure indonésienne (Internet Positif)
     target_url = (
         f"http://api.scraperapi.com?"
         f"api_key={SCRAPER_API_KEY}"
         f"&url={quote(url)}"
         f"&keep_headers=true"
+        f"&country_code=us"
     )
 
     for attempt in range(retries):
@@ -97,6 +97,7 @@ def _get(url: str, retries: int = 2) -> dict | None:
             time.sleep(0.5)
 
     return None
+
 # ---------------------------------------------------------------------------
 # Extraction des saisons et matchs
 # ---------------------------------------------------------------------------
@@ -159,10 +160,8 @@ def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
         unique_id = _event_unique_tournament_id(event)
         tournament_name = tournament.get("name", "").lower()
 
-        # 1. Verification par ID de ligue (Championnats classiques)
         league_name = LEAGUE_ID_TO_NAME.get(unique_id)
 
-        # 2. Détection dynamique pour les matchs amicaux
         if not league_name:
             if "friendly" in tournament_name or "amical" in tournament_name or "club friendlies" in tournament_name:
                 league_name = "Club Friendlies"
@@ -178,6 +177,7 @@ def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
         matches.append(match)
 
     return matches
+
 
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
     season_id = _get_current_season_id(tournament_id)
@@ -208,7 +208,6 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
     print(f"[scraper] Récupération des matchs pour le {date_str}…")
 
-    # 1. Tentative d'économie maximale : 1 seule requête globale
     scheduled_matches = _fetch_scheduled_matches(date_str)
     if scheduled_matches is not None:
         for league_name in LEAGUE_IDS:
@@ -218,7 +217,6 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
         print(f"[scraper] ✅ {len(scheduled_matches)} match(s) total (Via Global Request)")
         return scheduled_matches
 
-    # 2. Fallback par ligue si la requête globale a échoué
     print("[scraper] Fallback par ligue en cours…")
     all_matches = []
     for league_name, tid in LEAGUE_IDS.items():
@@ -322,13 +320,11 @@ def compute_features(match: dict) -> dict:
     hf = _get_team_features(match["home_team_id"])
     af = _get_team_features(match["away_team_id"])
 
-    # 💡 ÉCONOMIE DE CRÉDITS : On désactive le H2H uniquement pour les matchs amicaux
     is_friendly = match["league"] in ["Club Friendlies", "Women Club Friendlies"]
 
     if not is_friendly:
         h2h = _get_h2h_features(match["home_team_id"], match["away_team_id"])
     else:
-        # Valeur par défaut instantanée sans appel API (0 crédit consommé)
         h2h = {"h2h_over25_rate": 0.50, "h2h_btts_rate": 0.45}
 
     from predictor import COUNTRY_ENCODING
@@ -367,6 +363,13 @@ def fetch_matches_with_features(date_str: str | None = None) -> list[dict]:
     if not matches:
         return []
 
-    for match in matches:
-        match["features"] = compute_features(match)
+    print(f"[scraper] Calcul des features en parallèle pour {len(matches)} match(s)...")
+
+    def _process_match(m):
+        m["features"] = compute_features(m)
+        return m
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        matches = list(executor.map(_process_match, matches))
+
     return matches

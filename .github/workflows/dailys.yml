@@ -27,5 +27,6 @@ jobs:
         env:
           SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PYTHONPATH: ia_betpredict/backend
         run: |
-          PYTHONPATH=ia_betpredict/backend python -c "import asyncio, sys; sys.path.insert(0, 'ia_betpredict/backend'); from main import daily_prediction_job; asyncio.run(daily_prediction_job())"
+          python -m main
