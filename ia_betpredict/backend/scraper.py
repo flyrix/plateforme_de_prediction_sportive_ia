@@ -2,7 +2,6 @@
 scraper.py
 ----------
 Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore + ScraperAPI.
-Optimisé pour réduire au maximum la consommation de crédits ScraperAPI et éviter les timeouts.
 """
 
 import datetime
@@ -12,33 +11,28 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from curl_cffi import requests
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
 BASE_URL = "https://api.sofascore.com/api/v1"
 
 LEAGUE_IDS = {
-    "Veikkausliiga":         41,     # Finlande
-    "Eliteserien":           20,     # Norvège
-    "MLS":                   242,    # États-Unis
-    "Serie A Brasil":        325,    # Brésil
-    "USL Championship":      13363,  # USA
-    "USL League One":        13362,  # USA
-    "USL League Two":        13546,  # USA
-    "NPSL":                  13450,  # USA
-    "NPSL Founders Cup":     13742,  # USA
-    "Club Friendlies":       853,    # Matchs amicaux
+    "Veikkausliiga":         41,
+    "Eliteserien":           20,
+    "MLS":                   242,
+    "Serie A Brasil":        325,
+    "USL Championship":      13363,
+    "USL League One":        13362,
+    "USL League Two":        13546,
+    "NPSL":                  13450,
+    "NPSL Founders Cup":     13742,
+    "Club Friendlies":       853,
     "Women Club Friendlies": 24932,
 }
 
 LEAGUE_ID_TO_NAME = {tid: name for name, tid in LEAGUE_IDS.items()}
-
 SEASON_OVERRIDES: dict[int, int] = {}
-
 FORM_WINDOW = 5
+
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
-print(f"[DEBUG] SCRAPER_API_KEY est présente ? {'OUI' if SCRAPER_API_KEY else 'NON (VIDE)'}")
+print(f"[DEBUG] SCRAPER_API_KEY présente ? {'OUI' if SCRAPER_API_KEY else 'NON (VIDE)'}")
 
 SESSION = requests.Session(impersonate="chrome120")
 SESSION.trust_env = False
@@ -52,19 +46,15 @@ HEADERS = {
 
 CACHE = {}
 
-# ---------------------------------------------------------------------------
-# Helper HTTP avec ScraperAPI Optimisé (Coût = 1 Crédit / requete)
-# ---------------------------------------------------------------------------
 
 def _get(url: str, retries: int = 2) -> dict | None:
     if url in CACHE:
         return CACHE[url]
 
     if not SCRAPER_API_KEY:
-        print("[scraper] ❌ Pas de SCRAPER_API_KEY configurée. Requête annulée.")
+        print("[scraper] ❌ Pas de SCRAPER_API_KEY configurée.")
         return None
 
-    # country_code=us garantit un proxy clean évitant la censure indonésienne (Internet Positif)
     target_url = (
         f"http://api.scraperapi.com?"
         f"api_key={SCRAPER_API_KEY}"
@@ -80,8 +70,6 @@ def _get(url: str, retries: int = 2) -> dict | None:
                 try:
                     data = resp.json()
                 except Exception:
-                    print(f"[scraper] ⚠️ Réponse non-JSON pour {url} (status 200). "
-                          f"Extrait: {resp.text[:200]!r}")
                     CACHE[url] = None
                     return None
                 CACHE[url] = data
@@ -89,18 +77,12 @@ def _get(url: str, retries: int = 2) -> dict | None:
             elif resp.status_code == 404:
                 CACHE[url] = None
                 return None
-            else:
-                print(f"[scraper] ⚠️ HTTP {resp.status_code} pour {url} "
-                      f"(tentative {attempt + 1}/{retries}). Extrait: {resp.text[:200]!r}")
         except Exception as exc:
-            print(f"[scraper] ⚠️ Exception pour {url} (tentative {attempt + 1}/{retries}): {exc!r}")
+            print(f"[scraper] ⚠️ Exception {url} (tentative {attempt + 1}/{retries}): {exc!r}")
             time.sleep(0.5)
 
     return None
 
-# ---------------------------------------------------------------------------
-# Extraction des saisons et matchs
-# ---------------------------------------------------------------------------
 
 def _get_current_season_id(tournament_id: int) -> int | None:
     if tournament_id in SEASON_OVERRIDES:
@@ -124,6 +106,11 @@ def _event_to_match(event: dict, league_name: str, live: bool = False) -> dict |
         ts = event.get("startTimestamp", 0)
         home = event["homeTeam"]
         away = event["awayTeam"]
+        
+        status_info = event.get("status", {}) or {}
+        status_type = status_info.get("type", "").lower()
+        is_live_match = live or status_type == "inprogress"
+        
         match = {
             "league":       league_name,
             "match_name":   f"{home['name']} vs {away['name']}",
@@ -133,28 +120,30 @@ def _event_to_match(event: dict, league_name: str, live: bool = False) -> dict |
             "away_team":    away["name"],
             "match_time":   datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%H:%M"),
             "event_id":     event["id"],
+            "status":       status_type,
+            "is_live":      is_live_match
         }
-        if live:
-            status = event.get("status", {}) or {}
+        
+        if is_live_match:
             match.update({
-                "is_live": True,
-                "live_status": status.get("description") or status.get("type", "live"),
+                "live_status": status_info.get("description") or status_info.get("type", "live"),
                 "home_score": event.get("homeScore", {}).get("current"),
                 "away_score": event.get("awayScore", {}).get("current"),
             })
+            
         return match
     except (KeyError, TypeError):
         return None
 
 
 def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
-    """Tente de récupérer TOUS les matchs du jour en 1 seule requête globale."""
     data = _get(f"{BASE_URL}/sport/football/scheduled-events/{date_str}")
     if data is None:
         return None
 
     matches = []
     seen_event_ids = set()
+    
     for event in data.get("events", []):
         tournament = event.get("tournament", {}) or {}
         unique_id = _event_unique_tournament_id(event)
@@ -163,11 +152,10 @@ def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
         league_name = LEAGUE_ID_TO_NAME.get(unique_id)
 
         if not league_name:
-            if "friendly" in tournament_name or "amical" in tournament_name or "club friendlies" in tournament_name:
+            if any(k in tournament_name for k in ["friendly", "amical", "club friendlies"]):
                 league_name = "Club Friendlies"
-
-        if not league_name:
-            continue
+            else:
+                league_name = tournament.get("name", "Other League")
 
         match = _event_to_match(event, league_name)
         if not match or match["event_id"] in seen_event_ids:
@@ -204,17 +192,13 @@ def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str
 
 def fetch_all_matches(date_str: str | None = None) -> list[dict]:
     if date_str is None:
-        date_str = datetime.date.today().isoformat()
+        date_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
     print(f"[scraper] Récupération des matchs pour le {date_str}…")
 
     scheduled_matches = _fetch_scheduled_matches(date_str)
     if scheduled_matches is not None:
-        for league_name in LEAGUE_IDS:
-            count = sum(1 for match in scheduled_matches if match["league"] == league_name)
-            if count:
-                print(f"[scraper]   {league_name}: {count} match(s)")
-        print(f"[scraper] ✅ {len(scheduled_matches)} match(s) total (Via Global Request)")
+        print(f"[scraper] ✅ {len(scheduled_matches)} match(s) total récupérés (Via Global Request)")
         return scheduled_matches
 
     print("[scraper] Fallback par ligue en cours…")
@@ -222,7 +206,6 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
     for league_name, tid in LEAGUE_IDS.items():
         matches = fetch_matches_for_league(league_name, tid, date_str)
         if matches:
-            print(f"[scraper]   {league_name}: {len(matches)} match(s)")
             all_matches.extend(matches)
 
     print(f"[scraper] ✅ {len(all_matches)} match(s) total pour le {date_str}")
@@ -237,9 +220,9 @@ def fetch_inplay_matches() -> list[dict]:
     matches = []
     seen_event_ids = set()
     for event in data.get("events", []):
-        league_name = LEAGUE_ID_TO_NAME.get(_event_unique_tournament_id(event))
-        if not league_name:
-            continue
+        unique_id = _event_unique_tournament_id(event)
+        league_name = LEAGUE_ID_TO_NAME.get(unique_id, event.get("tournament", {}).get("name", "Live Match"))
+        
         match = _event_to_match(event, league_name, live=True)
         if not match or match["event_id"] in seen_event_ids:
             continue
@@ -249,9 +232,6 @@ def fetch_inplay_matches() -> list[dict]:
     print(f"[scraper] ✅ {len(matches)} match(s) live ciblé(s)")
     return matches
 
-# ---------------------------------------------------------------------------
-# Calcul des features pour XGBoost
-# ---------------------------------------------------------------------------
 
 def _get_team_features(team_id: int) -> dict:
     data = _get(f"{BASE_URL}/team/{team_id}/events/last/0")
@@ -363,13 +343,17 @@ def fetch_matches_with_features(date_str: str | None = None) -> list[dict]:
     if not matches:
         return []
 
-    print(f"[scraper] Calcul des features en parallèle pour {len(matches)} match(s)...")
+    upcoming_matches = [m for m in matches if m.get("status") == "notstarted"]
+    print(f"[scraper] Calcul des features pour {len(upcoming_matches)} match(s) à venir (sur {len(matches)} scrapés)...")
+
+    if not upcoming_matches:
+        return []
 
     def _process_match(m):
         m["features"] = compute_features(m)
         return m
 
     with ThreadPoolExecutor(max_workers=8) as executor:
-        matches = list(executor.map(_process_match, matches))
+        processed_matches = list(executor.map(_process_match, upcoming_matches))
 
-    return matches
+    return processed_matches

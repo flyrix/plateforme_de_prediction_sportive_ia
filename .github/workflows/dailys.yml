@@ -29,4 +29,4 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PYTHONPATH: ia_betpredict/backend
         run: |
-          python -m main
+          python -c "import asyncio; from main import daily_prediction_job, settle_finished_predictions; asyncio.run(daily_prediction_job()); asyncio.run(settle_finished_predictions())"
