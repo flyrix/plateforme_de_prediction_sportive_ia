@@ -1,6 +1,6 @@
 /**
  * app.js — IA-BetPredict Frontend
- * Mode 100% BDD Neon + Filtres Dynamiques (Fix Clic Filtres)
+ * Mode 100% BDD Neon + Filtres Dynamiques & Sécurisés
  */
 
 const RENDER_API_URL = "https://plateforme-de-prediction-sportive-ia.onrender.com";
@@ -23,40 +23,45 @@ const LEAGUE_FLAGS = {
 let allCoupons   = [];
 let activeLeague = "all";
 
-const $loading          = document.getElementById("loading");
-const $empty            = document.getElementById("empty");
-const $grid             = document.getElementById("coupons-grid");
-const $total            = document.getElementById("stat-total");
-const $avg              = document.getElementById("stat-avg");
-const $best             = document.getElementById("stat-best");
-const $filtersContainer = document.getElementById("filters-container");
+const $loading = document.getElementById("loading");
+const $empty   = document.getElementById("empty");
+const $grid    = document.getElementById("coupons-grid");
+const $total   = document.getElementById("stat-total");
+const $avg     = document.getElementById("stat-avg");
+const $best    = document.getElementById("stat-best");
+
+// Récupération sécurisée du conteneur de filtres (par ID ou par Classe)
+function getFiltersContainer() {
+  return document.getElementById("filters-container") || document.querySelector(".filters-inner");
+}
 
 document.addEventListener("DOMContentLoaded", async () => {
   setTodayLabel();
-  setupFilterDelegation(); // 👈 Écouteur global sur le conteneur des filtres
+  setupFilterDelegation();
   await loadCoupons();
 });
 
 // Helper pour vérifier si une ligue fait partie des championnats américains
 function isUSALeague(leagueName) {
   if (!leagueName) return false;
-  const l = leagueName.toUpperCase();
+  const l = String(leagueName).toUpperCase();
   return l.includes("MLS") || l.includes("USL") || l.includes("NPSL") || l.includes("USA");
 }
 
 // ── Delegated Event Listener pour les Filtres ────────────
 function setupFilterDelegation() {
-  if (!$filtersContainer) return;
+  const container = getFiltersContainer();
+  if (!container) return;
 
-  $filtersContainer.addEventListener("click", (e) => {
+  container.addEventListener("click", (e) => {
     const btn = e.target.closest(".filter-btn");
     if (!btn) return;
 
-    // Mise à jour de l'état actif sur les boutons
-    $filtersContainer.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+    // Retirer 'active' de tous les boutons et l'ajouter au bouton cliqué
+    container.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
 
-    // Mise à jour du filtre actif et rendu de la grille
+    // Mettre à jour la ligue active et relancer le rendu
     activeLeague = btn.dataset.league;
     renderCoupons();
   });
@@ -127,7 +132,8 @@ async function loadCoupons() {
 
 // ── Génération Dynamique des Boutons de Filtre ───────────
 function generateDynamicFilters() {
-  if (!$filtersContainer) return;
+  const container = getFiltersContainer();
+  if (!container) return;
 
   const leagues = new Set();
   let hasUSA = false;
@@ -152,7 +158,7 @@ function generateDynamicFilters() {
     buttonsHtml += `<button class="filter-btn ${isActive}" data-league="${escapeHtml(league)}">${flag} ${escapeHtml(league)}</button>`;
   });
 
-  $filtersContainer.innerHTML = buttonsHtml;
+  container.innerHTML = buttonsHtml;
 }
 
 // ── Filtrage et Rendu de la Grille ───────────────────────
