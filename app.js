@@ -1,9 +1,9 @@
 /**
  * app.js — IA-BetPredict Frontend
  *
- * 1. Charge les coupons depuis l'API FastAPI avec gestion de retry/timeout pour Render
- * 2. Affiche les cartes avec jauge de confiance
- * 3. Gère les filtres par ligue
+ * 1. Charge rapidement les coupons du jour depuis l'API FastAPI (Neon BDD)
+ * 2. Charge les événements LIVE en arrière-plan (non bloquant)
+ * 3. Affiche les cartes avec jauge de confiance et gère les filtres par ligue
  */
 
 // ── Config ────────────────────────────────────────────────
@@ -44,12 +44,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadCoupons();
 });
 
-// ── Helper Fetch avec Retry & Timeout pour Render ─────────
-async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000) {
+// ── Helper Fetch avec Retry & Timeout paramétrable ────────
+async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, timeoutMs = 25000) {
   try {
     const controller = new AbortController();
-    // 40 secondes pour laisser le serveur Render sortir du mode veille
-    const timeoutId = setTimeout(() => controller.abort(), 40000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     const response = await fetch(url, {
       ...options,
@@ -69,10 +68,10 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000) {
 
     return await response.json();
   } catch (err) {
-    if (retries > 0) {
+    if (retries > 0 && err.name !== 'AbortError') {
       console.warn(`[app] Tentative de connexion au serveur (${retries} réessais restants)...`);
       await new Promise(resolve => setTimeout(resolve, backoff));
-      return fetchWithRetry(url, options, retries - 1, backoff * 1.5);
+      return fetchWithRetry(url, options, retries - 1, backoff * 1.5, timeoutMs);
     }
     throw err;
   }
@@ -93,44 +92,64 @@ async function loadCoupons() {
   showState("loading");
 
   try {
-    // 1. Charger les coupons de la BDD Neon via FastAPI
-    const dailyData = await fetchWithRetry(`${API_BASE}/coupons`);
+    // 1. Charger PRIORITAIREMENT les coupons enregistrés en BDD Neon (Ultra-rapide)
+    const dailyData = await fetchWithRetry(`${API_BASE}/coupons`, {}, 3, 3000, 25000);
     const dailyCoupons = dailyData.coupons || [];
 
-    // 2. Charger le live de manière isolée
-    let liveCoupons = [];
-    try {
-      const liveRes = await fetch(`${API_BASE}/predictions/live`);
-      if (liveRes.ok) {
-        const liveData = await liveRes.json();
-        liveCoupons = liveData.coupons || [];
-      }
-    } catch (liveErr) {
-      console.warn("[app] Live indisponible ou vide :", liveErr);
-    }
-
-    // 3. Fusionner et dédoublonner
-    const couponsMap = new Map();
-
-    dailyCoupons.forEach(c => {
-      const key = `${c.match_name}_${c.prediction_type}`;
-      couponsMap.set(key, c);
-    });
-
-    liveCoupons.forEach(c => {
-      const key = `${c.match_name}_${c.prediction_type}`;
-      couponsMap.set(key, c);
-    });
-
-    allCoupons = Array.from(couponsMap.values());
-    
-    // 4. Mettre à jour l'IHM
+    // Afficher immédiatement les coupons enregistrés
+    allCoupons = [...dailyCoupons];
     renderCoupons();
     updateStats();
 
   } catch (err) {
-    console.error("[app] Erreur API globale :", err);
-    showState("error", `Impossible de joindre l'API. Le serveur Render est peut-être en cours de réveil. (${err.message})`);
+    console.error("[app] Erreur lors du chargement BDD Neon :", err);
+    showState("error", `Impossible de joindre l'API. Le serveur Render met du temps à démarrer. (${err.message})`);
+    return;
+  }
+
+  // 2. Charger le LIVE en ARRIÈRE-PLAN (de façon asynchrone et non-bloquante)
+  fetchLiveBackground();
+}
+
+// ── Chargement asynchrone du Live en arrière-plan ────────
+async function fetchLiveBackground() {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 secondes max pour le live
+
+    const liveRes = await fetch(`${API_BASE}/predictions/live`, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' }
+    });
+
+    clearTimeout(timeoutId);
+
+    if (liveRes.ok) {
+      const liveData = await liveRes.json();
+      const liveCoupons = liveData.coupons || [];
+
+      if (liveCoupons.length > 0) {
+        const couponsMap = new Map();
+
+        // Insérer d'abord les coupons du jour
+        allCoupons.forEach(c => {
+          const key = `${c.match_name}_${c.prediction_type}`;
+          couponsMap.set(key, c);
+        });
+
+        // Ajouter / écraser avec les matchs Live
+        liveCoupons.forEach(c => {
+          const key = `${c.match_name}_${c.prediction_type}`;
+          couponsMap.set(key, c);
+        });
+
+        allCoupons = Array.from(couponsMap.values());
+        renderCoupons(); // Mettre à jour l'affichage avec les lives
+        updateStats();
+      }
+    }
+  } catch (liveErr) {
+    console.warn("[app] Live ignoré ou trop lent :", liveErr.message);
   }
 }
 
