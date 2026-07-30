@@ -131,7 +131,9 @@ async def daily_prediction_job():
         try:
             coupons = generate_coupons(match)
             for c in coupons:
-                c["event_id"] = match["event_id"]
+                # Injection garantie des métadonnées d'identification
+                c["event_id"] = match.get("event_id")
+                c["match_name"] = match.get("match_name") or f"{match.get('home_team')} - {match.get('away_team')}"
             all_coupons.extend(coupons)
         except Exception as exc:
             print(f"[Cron] ⚠️ Erreur prédiction {match.get('match_name')} : {exc}")
@@ -143,9 +145,9 @@ async def daily_prediction_job():
     sql = """
         INSERT INTO predictions_history
             (match_date, match_name, league, home_team, away_team,
-             match_time, prediction_type, confidence_rate, status)
+             match_time, prediction_type, confidence_rate, status, event_id)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (match_date, match_name, prediction_type) DO NOTHING;
     """
     
@@ -161,7 +163,8 @@ async def daily_prediction_job():
             c.get("match_time", ""),
             c["prediction_type"],
             confidence,
-            "En attente"
+            "En attente",
+            c.get("event_id")
         ))
 
     try:
@@ -177,7 +180,11 @@ async def settle_finished_predictions():
     print("\n[Settler] 🔄 Mise à jour des résultats (Gagné / Perdu) et des scores...")
     
     pending = execute(
-        "SELECT id, match_name, match_date, prediction_type FROM predictions_history WHERE status = 'En attente'", 
+        """
+        SELECT id, match_name, match_date, prediction_type, event_id, home_team, away_team 
+        FROM predictions_history 
+        WHERE status = 'En attente'
+        """, 
         fetch=True
     )
     
@@ -187,14 +194,13 @@ async def settle_finished_predictions():
 
     from scraper import fetch_all_matches
 
-    # Regrouper les coupons par date pour scanner les bons résultats
-    dates_to_check = set(p["match_date"] for p in pending if p.get("match_date"))
+    # Regrouper les coupons par date
+    dates_to_check = set(str(p["match_date"]) for p in pending if p.get("match_date"))
     
     matches_by_date = {}
     for date_str in dates_to_check:
         try:
-            formatted_date = str(date_str)
-            matches_by_date[formatted_date] = fetch_all_matches(formatted_date)
+            matches_by_date[date_str] = fetch_all_matches(date_str)
         except Exception as err:
             print(f"[Settler] ⚠️ Erreur récupération matchs pour {date_str}: {err}")
 
@@ -202,12 +208,35 @@ async def settle_finished_predictions():
         m_date = str(p.get("match_date"))
         matches_today = matches_by_date.get(m_date, [])
         
-        p_name = p["match_name"].strip().lower()
-        match_info = next(
-            (m for m in matches_today if m.get("match_name", "").strip().lower() == p_name and m.get("status") in ["finished", "ended"]),
-            None
-        )
-        
+        p_event_id = str(p.get("event_id")) if p.get("event_id") else None
+        p_name = p.get("match_name", "").strip().lower() if p.get("match_name") else ""
+        p_home = p.get("home_team", "").strip().lower() if p.get("home_team") else ""
+        p_away = p.get("away_team", "").strip().lower() if p.get("away_team") else ""
+
+        # 1. Matching prioritaire par event_id
+        match_info = None
+        if p_event_id:
+            match_info = next(
+                (m for m in matches_today if str(m.get("event_id")) == p_event_id),
+                None
+            )
+
+        # 2. Fallback 1: Matching par nom exact de l'affiche (match_name)
+        if not match_info and p_name:
+            match_info = next(
+                (m for m in matches_today if m.get("match_name", "").strip().lower() == p_name),
+                None
+            )
+
+        # 3. Fallback 2: Matching sous-chaîne sur home_team et away_team
+        if not match_info and p_home and p_away:
+            match_info = next(
+                (m for m in matches_today 
+                 if p_home in m.get("home_team", "").lower() 
+                 and p_away in m.get("away_team", "").lower()),
+                None
+            )
+
         if not match_info:
             continue
 
@@ -247,7 +276,7 @@ async def settle_finished_predictions():
                 "UPDATE predictions_history SET status = %s, score = %s WHERE id = %s",
                 (status_val, formatted_score, p["id"])
             )
-            print(f"[Settler] ✅ Coupon #{p['id']} ({p['match_name']} - {pred}) -> Statut: {status_val}, Score: {formatted_score}")
+            print(f"[Settler] ✅ Coupon #{p['id']} ({p.get('match_name')} - {pred}) -> Statut: {status_val}, Score: {formatted_score}")
 
 
 if __name__ == "__main__":
