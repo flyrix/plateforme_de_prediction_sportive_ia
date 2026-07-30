@@ -7,8 +7,14 @@ seuils de confiance définis dans le cahier des charges.
 """
 
 import os
+import math
+import logging
 import joblib
 import pandas as pd
+
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
+logger = logging.getLogger("predictor")
 
 # ---------------------------------------------------------------------------
 # Seuils de confiance (règles métier du CDC)
@@ -39,6 +45,7 @@ LEAGUE_TO_GROUP = {
 
 _MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models")
 
+
 def _load(filename: str):
     path = os.path.normpath(os.path.join(_MODELS_DIR, filename))
     if not os.path.exists(path):
@@ -49,6 +56,7 @@ def _load(filename: str):
         if exc.name == "xgboost":
             raise
         raise
+
 
 def _load_group(group: str) -> dict | None:
     """Charge les 3 modèles spécialisés pour un groupe. Retourne None si absents."""
@@ -61,6 +69,7 @@ def _load_group(group: str) -> dict | None:
     except (FileNotFoundError, ModuleNotFoundError):
         return None
 
+
 # Chargement de tous les groupes spécialisés (y compris 'global')
 _SPECIALIZED: dict[str, dict] = {}
 _LEGACY_WINNER_WARNING_EMITTED = False
@@ -69,15 +78,14 @@ for _g in ["nordique", "americain", "sud_americain", "amicaux", "global"]:
     _m = _load_group(_g)
     if _m:
         _SPECIALIZED[_g] = _m
-        print(f"[predictor] ✅ Modèle spécialisé '{_g}' chargé.")
+        logger.info(f"✅ Modèle spécialisé '{_g}' chargé.")
 
 # Validation de la présence des modèles
 if "global" in _SPECIALIZED or len(_SPECIALIZED) > 0:
     _MODELS_LOADED = True
-    _GLOBAL = _SPECIALIZED.get("global")  # Utilise 'global' comme fallback
+    _GLOBAL = _SPECIALIZED.get("global")
 else:
-    print("[predictor] ⚠️ Aucun modèle trouvé dans le dossier /models/.")
-    print("[predictor] ⚠️ MODE DÉMO activé.")
+    logger.warning("⚠️ Aucun modèle trouvé dans le dossier /models/. MODE DÉMO activé.")
     _GLOBAL = None
     _MODELS_LOADED = False
 
@@ -101,25 +109,11 @@ FEATURE_COLUMNS = [
     "btts_rate_diff",    "over25_rate_diff",
 ]
 
-# Encodage si besoin de compatibilité
-COUNTRY_ENCODING = {
-    "Veikkausliiga":   0,
-    "Eliteserien":     1,
-    "MLS":             2,
-    "Serie A Brasil":  3,
-    "Club Friendlies": 4,
-}
-
 FEATURE_COLUMNS_LEGACY = FEATURE_COLUMNS + ["Country_encoded"]
 
 
 def _model_feature_names(model) -> list[str] | None:
-    """
-    Récupère la liste exacte des features attendues DIRECTEMENT depuis le modèle
-    (feature_names_in_ pour un wrapper sklearn, ou booster.feature_names pour XGBoost brut).
-    Évite de dépendre d'une liste codée en dur qui se désynchronise à chaque réentraînement.
-    Retourne None si le modèle ne l'expose pas (ex: mode démo, modèle très ancien).
-    """
+    """Récupère la liste exacte des features attendues directement depuis le modèle."""
     names = getattr(model, "feature_names_in_", None)
     if names is not None:
         return list(names)
@@ -136,21 +130,22 @@ def _features_to_df(features: dict, model=None, legacy: bool = False) -> pd.Data
     cols = _model_feature_names(model) if model is not None else None
     if not cols:
         cols = FEATURE_COLUMNS_LEGACY if legacy else FEATURE_COLUMNS
-        print(f"[predictor] ⚠️ Colonnes du modèle non détectables, "
-              f"repli sur la liste par défaut ({len(cols)} features).")
+        logger.warning(f"Colonnes du modèle non détectables, repli sur la liste par défaut ({len(cols)} features).")
+    
     row = {col: features.get(col, 0.0) for col in cols}
     missing = [c for c in cols if c not in features]
     if missing:
-        print(f"[predictor] ⚠️ Features absentes du dict, valeur 0.0 utilisée: {missing}")
+        logger.warning(f"Features absentes du dictionnaire, valeur 0.0 utilisée: {missing}")
+    
     return pd.DataFrame([row])
 
 
 # ---------------------------------------------------------------------------
-# Génération des coupons
+# Génération des prédictions
 # ---------------------------------------------------------------------------
 
-def _predict_proba_dict(model, X):
-    """Retourne un dict classe -> probabilité pour un modèle binaire."""
+def _predict_proba_dict(model, X) -> dict:
+    """Retourne un dict classe -> probabilité pour un modèle binaire ou multiclasse."""
     probs = model.predict_proba(X)[0]
     classes = list(model.classes_)
     if len(classes) != len(probs):
@@ -166,9 +161,6 @@ def _double_chance_predictions(model, X) -> dict:
     """
     Calcule 1X/X2 depuis un modèle résultat 3 classes :
       0 = domicile, 1 = nul, 2 = extérieur.
-
-    Les anciens modèles binaires entraînés sur dc_1x restent compatibles,
-    mais ils ne produisent que 1X pour éviter de présenter l'inverse comme X2.
     """
     global _LEGACY_WINNER_WARNING_EMITTED
 
@@ -186,7 +178,7 @@ def _double_chance_predictions(model, X) -> dict:
 
     if {"0", "1"}.issubset(class_labels):
         if not _LEGACY_WINNER_WARNING_EMITTED:
-            print("[predictor] ⚠️ Modèle winner legacy binaire : X2 ignoré jusqu'au réentraînement.")
+            logger.warning("Modèle winner legacy binaire : X2 ignoré jusqu'au réentraînement.")
             _LEGACY_WINNER_WARNING_EMITTED = True
         return {"Double Chance 1X": round(_class_probability(probs, 1), 4)}
 
@@ -195,12 +187,11 @@ def _double_chance_predictions(model, X) -> dict:
 
 def predict_match(features: dict, league: str = "") -> dict:
     """
-    Utilise le modèle spécialisé pour la ligue si disponible,
-    sinon le modèle 'global' spécialisé.
+    Utilise le modèle spécialisé pour la ligue si disponible, sinon le modèle 'global'.
     """
     if not _MODELS_LOADED and not _SPECIALIZED:
         import random
-        print("[predictor] ⚠️ MODE DÉMO")
+        logger.warning("MODE DÉMO activé")
         return {
             "Double Chance 1X": round(random.uniform(0.50, 0.90), 4),
             "Double Chance X2": round(random.uniform(0.50, 0.90), 4),
@@ -220,11 +211,8 @@ def predict_match(features: dict, league: str = "") -> dict:
         raise RuntimeError(f"Aucun modèle disponible pour la ligue '{league}'")
 
     source = f"spécialisé '{group}'" if group in _SPECIALIZED else "global"
-    print(f"[predictor] Modèle utilisé : {source} pour {league}")
+    logger.info(f"Modèle utilisé : {source} pour la ligue '{league}'")
 
-    # Chaque modèle (dc/over/btts) peut avoir son propre schéma de features
-    # (notamment si entraînés à des moments différents) : on construit un X
-    # dédié par modèle plutôt qu'un X unique partagé.
     X_dc   = _features_to_df(features, model=models["dc"])
     X_over = _features_to_df(features, model=models["over"])
     X_btts = _features_to_df(features, model=models["btts"])
@@ -232,13 +220,13 @@ def predict_match(features: dict, league: str = "") -> dict:
     winner_predictions = _double_chance_predictions(models["dc"], X_dc)
 
     btts_probs = _predict_proba_dict(models["btts"], X_btts)
-    btts_proba = btts_probs.get(1, btts_probs.get("1", 0.0))
+    btts_proba = _class_probability(btts_probs, 1)
 
-    # Over 2.5 : classifieur si présent, sinon régresseur
+    # Over 2.5 : classifieur si présent, sinon régresseur avec sigmoïde
     if hasattr(models["over"], "predict_proba"):
-        over_proba = models["over"].predict_proba(X_over)[0][1]
+        over_probs = _predict_proba_dict(models["over"], X_over)
+        over_proba = _class_probability(over_probs, 1)
     else:
-        import math
         goals_pred = float(models["over"].predict(X_over)[0])
         over_proba = round(1 / (1 + math.exp(-(goals_pred - 2.5))), 4)
 
@@ -252,12 +240,9 @@ def predict_match(features: dict, league: str = "") -> dict:
 def generate_coupons(match: dict, require_value_bet: bool = True) -> list[dict]:
     """
     Applique les seuils métier et calcule l'EV si la cote est présente.
-    
-    :param match: Dictionnaire contenant les features et éventuellement les odds.
-    :param require_value_bet: Si True, exige une cote et un EV > 0 pour valider le coupon.
     """
     features   = match.get("features", {})
-    odds       = match.get("odds", {})  # ex: {"1N2_H": 1.85, "Over_2.5": 1.90}
+    odds       = match.get("odds", {})
     probas     = predict_match(features, league=match.get("league", ""))
     coupons    = []
 
@@ -265,14 +250,11 @@ def generate_coupons(match: dict, require_value_bet: bool = True) -> list[dict]:
         threshold     = THRESHOLDS.get(market, 1.0)
         bookmaker_odd = odds.get(market) if odds else None
 
-        # 1. Le modèle valide-t-il la confiance minimale ?
         if confidence >= threshold:
-            
-            # Cas 1 : La cote est disponible -> Calcul de l'EV
+            # Cas 1 : Cote disponible -> Calcul EV
             if bookmaker_odd is not None and bookmaker_odd > 1.0:
                 ev = (confidence * bookmaker_odd) - 1.0
 
-                # On ne retient que les paris rentables (EV > 0)
                 if ev > 0:
                     coupons.append({
                         "league":          match.get("league"),
@@ -288,7 +270,7 @@ def generate_coupons(match: dict, require_value_bet: bool = True) -> list[dict]:
                         "event_id":        match.get("event_id"),
                     })
 
-            # Cas 2 : La cote est introuvable mais le paramètre de secours l'autorise
+            # Cas 2 : Cote absente mais autorisée par require_value_bet=False
             elif not require_value_bet:
                 coupons.append({
                     "league":          match.get("league"),

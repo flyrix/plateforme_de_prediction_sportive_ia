@@ -2,6 +2,7 @@
 scraper.py
 ----------
 Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore + ScraperAPI.
+Incorpore l'extraction automatique des cotes pour le calcul de l'Expected Value (EV).
 """
 
 import datetime
@@ -84,6 +85,63 @@ def _get(url: str, retries: int = 2) -> dict | None:
     return None
 
 
+def fetch_match_odds(event_id: int) -> dict:
+    """
+    Récupère les cotes du bookmaker depuis l'API Sofascore pour un événement donné.
+    Retourne un dictionnaire normalisé (ex: {'1N2_H': 1.85, 'Over_2.5': 1.95, ...})
+    """
+    data = _get(f"{BASE_URL}/event/{event_id}/odds/1/all")
+    if not data or "markets" not in data:
+        return {}
+
+    parsed_odds = {}
+    for market in data.get("markets", []):
+        market_name = market.get("marketName", "").lower()
+        
+        # Cotes 1N2 (Full Time)
+        if market_name in ["full time", "1x2", "match result"]:
+            for choice in market.get("choices", []):
+                name = choice.get("name", "").upper()
+                fractional = choice.get("initialFractionalValue") or choice.get("fractionalValue")
+                decimal_odd = choice.get("decimalValue")
+                
+                # Conversion au besoin si seule la cote décimale explicite est présente
+                if not decimal_odd and choice.get("change"):
+                    decimal_odd = choice.get("current")
+
+                if decimal_odd:
+                    val = float(decimal_odd)
+                    if name in ["1", "HOME"]:
+                        parsed_odds["1N2_H"] = val
+                    elif name in ["X", "DRAW"]:
+                        parsed_odds["1N2_D"] = val
+                    elif name in ["2", "AWAY"]:
+                        parsed_odds["1N2_A"] = val
+
+        # Cotes Over/Under 2.5
+        elif "total" in market_name or "goals" in market_name:
+            for choice in market.get("choices", []):
+                choice_name = choice.get("name", "").lower()
+                choice_line = choice.get("choiceGroup") or str(choice.get("line", ""))
+                
+                if "2.5" in choice_line or choice.get("line") == 2.5:
+                    if "over" in choice_name and choice.get("decimalValue"):
+                        parsed_odds["Over_2.5"] = float(choice["decimalValue"])
+                    elif "under" in choice_name and choice.get("decimalValue"):
+                        parsed_odds["Under_2.5"] = float(choice["decimalValue"])
+
+        # Cotes Both Teams to Score (BTTS)
+        elif "both teams to score" in market_name or "btts" in market_name:
+            for choice in market.get("choices", []):
+                choice_name = choice.get("name", "").lower()
+                if choice_name in ["yes", "oui"] and choice.get("decimalValue"):
+                    parsed_odds["BTTS_Yes"] = float(choice["decimalValue"])
+                elif choice_name in ["no", "non"] and choice.get("decimalValue"):
+                    parsed_odds["BTTS_No"] = float(choice["decimalValue"])
+
+    return parsed_odds
+
+
 def _get_current_season_id(tournament_id: int) -> int | None:
     if tournament_id in SEASON_OVERRIDES:
         return SEASON_OVERRIDES[tournament_id]
@@ -121,7 +179,8 @@ def _event_to_match(event: dict, league_name: str, live: bool = False) -> dict |
             "match_time":   datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%H:%M"),
             "event_id":     event["id"],
             "status":       status_type,
-            "is_live":      is_live_match
+            "is_live":      is_live_match,
+            "odds":         {}
         }
         
         if is_live_match:
@@ -344,16 +403,18 @@ def fetch_matches_with_features(date_str: str | None = None) -> list[dict]:
         return []
 
     upcoming_matches = [m for m in matches if m.get("status") == "notstarted"]
-    print(f"[scraper] Calcul des features pour {len(upcoming_matches)} match(s) à venir (sur {len(matches)} scrapés)...")
+    print(f"[scraper] Calcul des features et cotes pour {len(upcoming_matches)} match(s) à venir (sur {len(matches)} scrapés)...")
 
     if not upcoming_matches:
         return []
 
     def _process_match(m):
         m["features"] = compute_features(m)
+        m["odds"]     = fetch_match_odds(m["event_id"])
         return m
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # Réduction du nombre de threads de 8 à 4 pour éviter les timeouts ScraperAPI / Curl 28
+    with ThreadPoolExecutor(max_workers=4) as executor:
         processed_matches = list(executor.map(_process_match, upcoming_matches))
 
     return processed_matches
