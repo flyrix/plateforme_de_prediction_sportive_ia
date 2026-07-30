@@ -20,6 +20,12 @@ logger = logging.getLogger("predictor")
 # Seuils de confiance (règles métier du CDC)
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# Encodage pays (compatibilité legacy scraper)
+# ---------------------------------------------------------------------------
+COUNTRY_ENCODING: dict[str, int] = {}
+
 THRESHOLDS = {
     "Double Chance 1X": 0.50,
     "Double Chance X2": 0.50,
