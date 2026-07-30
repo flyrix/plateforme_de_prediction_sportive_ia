@@ -193,17 +193,57 @@ async def settle_finished_predictions():
         print("[Settler] Aucun coupon en attente.")
         return
 
+    from scraper import fetch_all_matches
+
+    # Indexation par date pour les coupons qui N'ONT PAS d'event_id (anciennes données)
+    dates_without_id = set(str(p["match_date"]) for p in pending if not p.get("event_id") and p.get("match_date"))
+    matches_by_date = {}
+    
+    for d in dates_without_id:
+        try:
+            matches_by_date[d] = fetch_all_matches(d)
+        except Exception as err:
+            print(f"[Settler] ⚠️ Erreur récap date {d}: {err}")
+
     for p in pending:
         event_id = p.get("event_id")
+        m_date = str(p.get("match_date"))
         
-        # Interrogation directe de l'API Sofascore par ID d'événement pour éviter le re-scraping massif
+        # 1. Si on n'a pas d'event_id, on tente de le retrouver via le match_name dans fetch_all_matches
+        if not event_id and m_date in matches_by_date:
+            p_name = p.get("match_name", "").strip().lower()
+            p_home = p.get("home_team", "").strip().lower()
+            p_away = p.get("away_team", "").strip().lower()
+            
+            matches_today = matches_by_date[m_date]
+            
+            # Recherche par nom ou équipes
+            found = next(
+                (m for m in matches_today if m.get("match_name", "").strip().lower() == p_name),
+                None
+            )
+            if not found and p_home and p_away:
+                found = next(
+                    (m for m in matches_today 
+                     if p_home in m.get("home_team", "").lower() 
+                     and p_away in m.get("away_team", "").lower()),
+                    None
+                )
+            
+            if found:
+                event_id = found.get("event_id")
+                # Sauvegarde immédiate de l'event_id manquant en BDD
+                execute("UPDATE predictions_history SET event_id = %s WHERE id = %s", (event_id, p["id"]))
+
+        # 2. Si toujours aucun event_id disponible, on passe
         if not event_id:
             continue
 
+        # 3. Interrogation directe de l'API Sofascore
         try:
             data = _get(f"{BASE_URL}/event/{event_id}")
         except Exception as err:
-            print(f"[Settler] ⚠️ Impossible de joindre l'API pour l'événement #{event_id}: {err}")
+            print(f"[Settler] ⚠️ Erreur API pour l'événement #{event_id}: {err}")
             continue
 
         if not data or "event" not in data:
@@ -232,13 +272,12 @@ async def settle_finished_predictions():
 
             formatted_score = f"{home_score} - {away_score}"
 
-            # Mise à jour synchronisée du Statut ET du Score en BDD
+            # Mise à jour synchronisée
             execute(
-                "UPDATE predictions_history SET status = %s, score = %s WHERE id = %s",
-                (status_val, formatted_score, p["id"])
+                "UPDATE predictions_history SET status = %s, score = %s, event_id = %s WHERE id = %s",
+                (status_val, formatted_score, str(event_id), p["id"])
             )
             print(f"[Settler] ✅ Coupon #{p['id']} ({p.get('match_name')} - {pred}) -> Statut: {status_val}, Score: {formatted_score}")
-
 
 if __name__ == "__main__":
     async def run_cron():
