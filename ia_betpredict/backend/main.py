@@ -129,9 +129,10 @@ async def daily_prediction_job():
     all_coupons = []
     for match in upcoming_matches:
         try:
-            coupons = generate_coupons(match)
+            # require_value_bet=False pour forcer la génération des coupons
+            # même si les bookmakers n'ont pas encore publié de cotes
+            coupons = generate_coupons(match, require_value_bet=False)
             for c in coupons:
-                # Injection garantie des métadonnées d'identification
                 c["event_id"] = match.get("event_id")
                 c["match_name"] = match.get("match_name") or f"{match.get('home_team')} - {match.get('away_team')}"
             all_coupons.extend(coupons)
@@ -176,7 +177,7 @@ async def daily_prediction_job():
 
 
 async def settle_finished_predictions():
-    """Vérification et mise à jour du statut et du score des matchs terminés."""
+    """Vérification et mise à jour directe du statut et du score des matchs terminés."""
     print("\n[Settler] 🔄 Mise à jour des résultats (Gagné / Perdu) et des scores...")
     
     pending = execute(
@@ -192,59 +193,19 @@ async def settle_finished_predictions():
         print("[Settler] Aucun coupon en attente.")
         return
 
-    from scraper import fetch_all_matches
-
-    # Regrouper les coupons par date
-    dates_to_check = set(str(p["match_date"]) for p in pending if p.get("match_date"))
-    
-    matches_by_date = {}
-    for date_str in dates_to_check:
-        try:
-            matches_by_date[date_str] = fetch_all_matches(date_str)
-        except Exception as err:
-            print(f"[Settler] ⚠️ Erreur récupération matchs pour {date_str}: {err}")
-
     for p in pending:
-        m_date = str(p.get("match_date"))
-        matches_today = matches_by_date.get(m_date, [])
+        event_id = p.get("event_id")
         
-        p_event_id = str(p.get("event_id")) if p.get("event_id") else None
-        p_name = p.get("match_name", "").strip().lower() if p.get("match_name") else ""
-        p_home = p.get("home_team", "").strip().lower() if p.get("home_team") else ""
-        p_away = p.get("away_team", "").strip().lower() if p.get("away_team") else ""
-
-        # 1. Matching prioritaire par event_id
-        match_info = None
-        if p_event_id:
-            match_info = next(
-                (m for m in matches_today if str(m.get("event_id")) == p_event_id),
-                None
-            )
-
-        # 2. Fallback 1: Matching par nom exact de l'affiche (match_name)
-        if not match_info and p_name:
-            match_info = next(
-                (m for m in matches_today if m.get("match_name", "").strip().lower() == p_name),
-                None
-            )
-
-        # 3. Fallback 2: Matching sous-chaîne sur home_team et away_team
-        if not match_info and p_home and p_away:
-            match_info = next(
-                (m for m in matches_today 
-                 if p_home in m.get("home_team", "").lower() 
-                 and p_away in m.get("away_team", "").lower()),
-                None
-            )
-
-        if not match_info:
-            continue
-
-        event_id = match_info.get("event_id")
+        # Interrogation directe de l'API Sofascore par ID d'événement pour éviter le re-scraping massif
         if not event_id:
             continue
 
-        data = _get(f"{BASE_URL}/event/{event_id}")
+        try:
+            data = _get(f"{BASE_URL}/event/{event_id}")
+        except Exception as err:
+            print(f"[Settler] ⚠️ Impossible de joindre l'API pour l'événement #{event_id}: {err}")
+            continue
+
         if not data or "event" not in data:
             continue
 
@@ -271,7 +232,7 @@ async def settle_finished_predictions():
 
             formatted_score = f"{home_score} - {away_score}"
 
-            # Mise à jour synchronisée du Statut ET du Score
+            # Mise à jour synchronisée du Statut ET du Score en BDD
             execute(
                 "UPDATE predictions_history SET status = %s, score = %s WHERE id = %s",
                 (status_val, formatted_score, p["id"])
