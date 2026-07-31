@@ -20,18 +20,17 @@ logger = logging.getLogger("predictor")
 # Seuils de confiance (règles métier du CDC)
 # ---------------------------------------------------------------------------
 
-
-# ---------------------------------------------------------------------------
-# Encodage pays (compatibilité legacy scraper)
-# ---------------------------------------------------------------------------
-COUNTRY_ENCODING: dict[str, int] = {}
-
 THRESHOLDS = {
     "Double Chance 1X": 0.50,
     "Double Chance X2": 0.50,
     "Over 2.5":         0.50,
     "BTTS":             0.50,
 }
+
+# ---------------------------------------------------------------------------
+# Encodage pays (compatibilité legacy scraper)
+# ---------------------------------------------------------------------------
+COUNTRY_ENCODING: dict[str, int] = {}
 
 # ---------------------------------------------------------------------------
 # Mapping ligue → groupe (pour charger le bon modèle spécialisé)
@@ -167,6 +166,7 @@ def _double_chance_predictions(model, X) -> dict:
     """
     Calcule 1X/X2 depuis un modèle résultat 3 classes :
       0 = domicile, 1 = nul, 2 = extérieur.
+    Retient uniquement la Double Chance la plus probable pour le match.
     """
     global _LEGACY_WINNER_WARNING_EMITTED
 
@@ -177,10 +177,15 @@ def _double_chance_predictions(model, X) -> dict:
         home = _class_probability(probs, 0)
         draw = _class_probability(probs, 1)
         away = _class_probability(probs, 2)
-        return {
-            "Double Chance 1X": round(home + draw, 4),
-            "Double Chance X2": round(draw + away, 4),
-        }
+        
+        prob_1x = round(home + draw, 4)
+        prob_x2 = round(draw + away, 4)
+
+        # Sélection de la meilleure Double Chance uniquement
+        if prob_1x >= prob_x2:
+            return {"Double Chance 1X": prob_1x}
+        else:
+            return {"Double Chance X2": prob_x2}
 
     if {"0", "1"}.issubset(class_labels):
         if not _LEGACY_WINNER_WARNING_EMITTED:
@@ -198,9 +203,11 @@ def predict_match(features: dict, league: str = "") -> dict:
     if not _MODELS_LOADED and not _SPECIALIZED:
         import random
         logger.warning("MODE DÉMO activé")
+        
+        # En mode Démo, on tire au sort 1X ou X2 pour ne garder qu'une seule Double Chance
+        dc_choice = "Double Chance 1X" if random.random() > 0.5 else "Double Chance X2"
         return {
-            "Double Chance 1X": round(random.uniform(0.50, 0.90), 4),
-            "Double Chance X2": round(random.uniform(0.50, 0.90), 4),
+            dc_choice:          round(random.uniform(0.50, 0.90), 4),
             "Over 2.5":         round(random.uniform(0.45, 0.85), 4),
             "BTTS":             round(random.uniform(0.45, 0.85), 4),
         }
@@ -246,6 +253,7 @@ def predict_match(features: dict, league: str = "") -> dict:
 def generate_coupons(match: dict, require_value_bet: bool = True) -> list[dict]:
     """
     Applique les seuils métier et calcule l'EV si la cote est présente.
+    Structure de clés 100% alignée avec main.py et Neon.
     """
     features   = match.get("features", {})
     odds       = match.get("odds", {})
@@ -269,7 +277,8 @@ def generate_coupons(match: dict, require_value_bet: bool = True) -> list[dict]:
                         "match_time":      match.get("match_time"),
                         "prediction_type": market,
                         "confidence_rate": confidence,
-                        "odd":             bookmaker_odd,
+                        "odds":            bookmaker_odd,          # Alignement avec main.py (odds au lieu de odd)
+                        "ev":              round(ev, 4),           # Alignement avec main.py (ev au lieu de expected_value)
                         "expected_value":  round(ev, 4),
                         "is_value_bet":    True,
                         "status":          match.get("status", "En attente"),
@@ -285,8 +294,9 @@ def generate_coupons(match: dict, require_value_bet: bool = True) -> list[dict]:
                     "match_time":      match.get("match_time"),
                     "prediction_type": market,
                     "confidence_rate": confidence,
-                    "odd":             None,
-                    "expected_value":  None,
+                    "odds":            1.0,
+                    "ev":              0.0,
+                    "expected_value":  0.0,
                     "is_value_bet":    False,
                     "status":          match.get("status", "Cote manquante"),
                     "event_id":        match.get("event_id"),
