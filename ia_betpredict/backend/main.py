@@ -2,6 +2,7 @@
 main.py
 -------
 API FastAPI optimisée pour Vercel & Render (Mode 100% BDD Neon / Zero ScraperAPI en Live).
+Gestion de la valeur attendue (EV), sélection dynamique des cotes et dépouillement universel.
 """
 
 import os
@@ -23,8 +24,8 @@ from db import execute, execute_batch
 
 app = FastAPI(
     title="IA-BetPredict API",
-    description="Prédictions sportives par XGBoost - Historique et Résultats",
-    version="1.2.0",
+    description="Prédictions sportives par XGBoost - EV & Historique de Value Bets",
+    version="1.4.1",
 )
 
 # CORS
@@ -50,6 +51,39 @@ async def options_handler(request: Request, full_path: str):
 
 
 # ---------------------------------------------------------------------------
+# Fonction utilitaire d'arbitrage Double Chance
+# ---------------------------------------------------------------------------
+
+def filter_best_double_chance(coupons: list[dict]) -> list[dict]:
+    """
+    Conserve uniquement la meilleure Double Chance par match (ex: garde 1X a 80% et rejette 2X a 77%).
+    Les autres types de paris sont conservés sans modification.
+    """
+    dc_candidates: dict[str, dict] = {}
+    filtered_coupons: list[dict] = []
+
+    for c in coupons:
+        pred_type = str(c.get("prediction_type", "")).strip().upper()
+
+        # Detection des paris de type Double Chance
+        is_dc = any(dc in pred_type for dc in ["DOUBLE CHANCE", "1X", "X2", "2X", "12"])
+
+        if is_dc:
+            match_key = str(c.get("event_id") or c.get("match_name"))
+            confidence = float(c.get("confidence_rate", 0))
+
+            # Si pas encore enregistre ou si la confiance est supérieure, on remplace
+            if match_key not in dc_candidates or confidence > float(dc_candidates[match_key].get("confidence_rate", 0)):
+                dc_candidates[match_key] = c
+        else:
+            filtered_coupons.append(c)
+
+    # Ajout des meilleures Double Chance sélectionnées
+    filtered_coupons.extend(dc_candidates.values())
+    return filtered_coupons
+
+
+# ---------------------------------------------------------------------------
 # Endpoints BDD (Lecture ultra-rapide)
 # ---------------------------------------------------------------------------
 
@@ -63,10 +97,11 @@ async def get_todays_coupons(
     league: str | None = Query(default=None),
     status: str | None = Query(default=None),
     min_confidence: float = Query(default=0.0, ge=0, le=1),
+    min_ev: float = Query(default=0.0, description="Filtrer par EV minimum (ex: 0.05 pour +5%)"),
 ):
     """Récupère les coupons du jour stockés en base Neon."""
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    return _fetch_coupons(today, league, status, min_confidence)
+    return _fetch_coupons(today, league, status, min_confidence, min_ev)
 
 
 @app.get("/coupons/{date}", tags=["Coupons"])
@@ -75,19 +110,20 @@ async def get_coupons_by_date(
     league: str | None = Query(default=None),
     status: str | None = Query(default=None),
     min_confidence: float = Query(default=0.0, ge=0, le=1),
+    min_ev: float = Query(default=0.0, description="Filtrer par EV minimum (ex: 0.05 pour +5%)"),
 ):
     """Récupère les coupons d'une date spécifique (ex: résultats d'hier)."""
     try:
         datetime.date.fromisoformat(date)
     except ValueError:
         raise HTTPException(status_code=400, detail="Format de date invalide. Utilisez YYYY-MM-DD.")
-    return _fetch_coupons(date, league, status, min_confidence)
+    return _fetch_coupons(date, league, status, min_confidence, min_ev)
 
 
-def _fetch_coupons(match_date: str, league: str | None, status: str | None, min_confidence: float) -> dict:
+def _fetch_coupons(match_date: str, league: str | None, status: str | None, min_confidence: float, min_ev: float) -> dict:
     try:
-        query = "SELECT * FROM predictions_history WHERE match_date = %s AND confidence_rate >= %s"
-        params = [match_date, min_confidence]
+        query = "SELECT * FROM predictions_history WHERE match_date = %s AND confidence_rate >= %s AND expected_value >= %s"
+        params = [match_date, min_confidence, min_ev]
 
         if league:
             query += " AND league = %s"
@@ -97,12 +133,57 @@ def _fetch_coupons(match_date: str, league: str | None, status: str | None, min_
             query += " AND status = %s"
             params.append(status)
 
-        query += " ORDER BY confidence_rate DESC"
+        query += " ORDER BY expected_value DESC, confidence_rate DESC"
 
         rows = execute(query, tuple(params), fetch=True)
         return {"date": match_date, "count": len(rows), "coupons": rows}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erreur Neon : {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Dépouillement (Settler)
+# ---------------------------------------------------------------------------
+
+def evaluate_prediction(pred_type: str, home_score: int, away_score: int) -> str:
+    """Évalue si une prédiction est Gagnée ou Perdue selon le score final."""
+    pred = pred_type.strip()
+    total_goals = home_score + away_score
+    btts = home_score > 0 and away_score > 0
+
+    # Résultat 1N2
+    if pred in ["Victoire Domicile", "1", "Home"] and home_score > away_score:
+        return "Gagné"
+    if pred in ["Match Nul", "X", "Draw"] and home_score == away_score:
+        return "Gagné"
+    if pred in ["Victoire Extérieur", "2", "Away"] and away_score > home_score:
+        return "Gagné"
+
+    # Double Chance
+    if pred in ["Double Chance 1X", "1X"] and home_score >= away_score:
+        return "Gagné"
+    if pred in ["Double Chance X2", "2X", "X2"] and away_score >= home_score:
+        return "Gagné"
+    if pred in ["Double Chance 12", "12"] and home_score != away_score:
+        return "Gagné"
+
+    # Over / Under
+    if pred in ["Over 2.5", "+2.5 Buts"] and total_goals > 2.5:
+        return "Gagné"
+    if pred in ["Under 2.5", "-2.5 Buts"] and total_goals < 2.5:
+        return "Gagné"
+    if pred in ["Over 1.5", "+1.5 Buts"] and total_goals > 1.5:
+        return "Gagné"
+    if pred in ["Under 1.5", "-1.5 Buts"] and total_goals < 1.5:
+        return "Gagné"
+
+    # BTTS
+    if pred in ["BTTS", "Les deux équipes marquant", "BTTS Oui"] and btts:
+        return "Gagné"
+    if pred in ["BTTS Non", "Les deux équipes ne marquant pas"] and not btts:
+        return "Gagné"
+
+    return "Perdu"
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +193,7 @@ def _fetch_coupons(match_date: str, league: str | None, status: str | None, min_
 async def daily_prediction_job():
     """Génération des prédictions (exécuté par GitHub Actions)."""
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    print(f"\n[Cron] ▶ Lancement de la génération des prédictions — {today}")
+    print(f"\n[Cron] ▶ Lancement de la génération des prédictions + Calcul EV — {today}")
 
     try:
         raw_matches = fetch_matches_with_features(today)
@@ -127,29 +208,49 @@ async def daily_prediction_job():
         return
 
     all_coupons = []
+    MIN_CONFIDENCE = 0.50  # Probabilité minimum du modèle (50%)
+    MIN_EV = 0.02          # EV minimum exigé (+2% de valeur)
+
     for match in upcoming_matches:
         try:
-            # require_value_bet=False pour forcer la génération des coupons
-            # même si les bookmakers n'ont pas encore publié de cotes
-            coupons = generate_coupons(match, require_value_bet=False)
+            # require_value_bet=True : calcule l'EV si les cotes sont présentes
+            coupons = generate_coupons(match, require_value_bet=True)
+            
+            # --- FILTRAGE ET ARBITRAGE DOUBLE CHANCE PAR MATCH ---
+            coupons = filter_best_double_chance(coupons)
+
             for c in coupons:
-                c["event_id"] = match.get("event_id")
-                c["match_name"] = match.get("match_name") or f"{match.get('home_team')} - {match.get('away_team')}"
-            all_coupons.extend(coupons)
+                confidence = float(c.get("confidence_rate", 0))
+                odds = float(c.get("odds", 1.0))
+                
+                # Calcul dynamique de l'EV si pas déjà calculé dans predictor.py
+                ev = float(c.get("ev", (confidence * odds) - 1.0)) if odds > 1.0 else 0.0
+
+                # On applique le filtre de valeur (EV) & de confiance
+                if confidence >= MIN_CONFIDENCE and ev >= MIN_EV:
+                    c["event_id"] = match.get("event_id")
+                    c["match_name"] = match.get("match_name") or f"{match.get('home_team')} - {match.get('away_team')}"
+                    c["odds"] = odds
+                    c["ev"] = round(ev, 4)
+                    all_coupons.append(c)
         except Exception as exc:
             print(f"[Cron] ⚠️ Erreur prédiction {match.get('match_name')} : {exc}")
 
     if not all_coupons:
-        print("[Cron] Aucun coupon généré.")
+        print("[Cron] Aucun Value Bet (EV >= +2%) trouvé pour aujourd'hui.")
         return
 
+    # Inscription BDD avec mise à jour des cotes et EV
     sql = """
         INSERT INTO predictions_history
             (match_date, match_name, league, home_team, away_team,
-             match_time, prediction_type, confidence_rate, status, event_id)
+             match_time, prediction_type, confidence_rate, status, event_id, odds, expected_value)
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (match_date, match_name, prediction_type) DO NOTHING;
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (match_date, match_name, prediction_type) DO UPDATE SET
+            odds = EXCLUDED.odds,
+            expected_value = EXCLUDED.expected_value,
+            confidence_rate = EXCLUDED.confidence_rate;
     """
     
     params_list = []
@@ -165,12 +266,14 @@ async def daily_prediction_job():
             c["prediction_type"],
             confidence,
             "En attente",
-            c.get("event_id")
+            c.get("event_id"),
+            c.get("odds", 1.0),
+            c.get("ev", 0.0)
         ))
 
     try:
         inserted = execute_batch(sql, params_list)
-        print(f"[Cron] ✅ {inserted} coupon(s) insérés avec succès.")
+        print(f"[Cron] ✅ {inserted} Value Bet(s) insérés/mis à jour avec succès.")
     except Exception as exc:
         print(f"[Cron] ❌ Échec transaction BDD : {exc}")
         raise exc
@@ -195,7 +298,7 @@ async def settle_finished_predictions():
 
     from scraper import fetch_all_matches
 
-    # Indexation par date pour les coupons qui N'ONT PAS d'event_id (anciennes données)
+    # Indexation par date pour les coupons qui N'ONT PAS d'event_id
     dates_without_id = set(str(p["match_date"]) for p in pending if not p.get("event_id") and p.get("match_date"))
     matches_by_date = {}
     
@@ -209,7 +312,7 @@ async def settle_finished_predictions():
         event_id = p.get("event_id")
         m_date = str(p.get("match_date"))
         
-        # 1. Si on n'a pas d'event_id, on tente de le retrouver via le match_name dans fetch_all_matches
+        # 1. Tente de retrouver l'event_id manquant via le nom des équipes
         if not event_id and m_date in matches_by_date:
             p_name = p.get("match_name", "").strip().lower()
             p_home = p.get("home_team", "").strip().lower()
@@ -217,7 +320,6 @@ async def settle_finished_predictions():
             
             matches_today = matches_by_date[m_date]
             
-            # Recherche par nom ou équipes
             found = next(
                 (m for m in matches_today if m.get("match_name", "").strip().lower() == p_name),
                 None
@@ -232,14 +334,12 @@ async def settle_finished_predictions():
             
             if found:
                 event_id = found.get("event_id")
-                # Sauvegarde immédiate de l'event_id manquant en BDD
                 execute("UPDATE predictions_history SET event_id = %s WHERE id = %s", (event_id, p["id"]))
 
-        # 2. Si toujours aucun event_id disponible, on passe
         if not event_id:
             continue
 
-        # 3. Interrogation directe de l'API Sofascore
+        # 2. Interrogation de l'API Sofascore
         try:
             data = _get(f"{BASE_URL}/event/{event_id}")
         except Exception as err:
@@ -252,32 +352,28 @@ async def settle_finished_predictions():
         ev = data["event"]
         status_type = ev.get("status", {}).get("type")
 
+        # 3. Traitement si le match est terminé
         if status_type in ["finished", "ended"]:
             home_score = ev.get("homeScore", {}).get("current", 0) or 0
             away_score = ev.get("awayScore", {}).get("current", 0) or 0
-            pred = p["prediction_type"]
-
-            total_goals = home_score + away_score
-            btts = home_score > 0 and away_score > 0
             
-            status_val = "Perdu"
-            if pred == "Double Chance 1X" and home_score >= away_score:
-                status_val = "Gagné"
-            elif pred == "Double Chance X2" and away_score >= home_score:
-                status_val = "Gagné"
-            elif pred == "Over 2.5" and total_goals > 2.5:
-                status_val = "Gagné"
-            elif pred == "BTTS" and btts:
-                status_val = "Gagné"
-
+            status_val = evaluate_prediction(p["prediction_type"], home_score, away_score)
             formatted_score = f"{home_score} - {away_score}"
 
-            # Mise à jour synchronisée
             execute(
                 "UPDATE predictions_history SET status = %s, score = %s, event_id = %s WHERE id = %s",
                 (status_val, formatted_score, str(event_id), p["id"])
             )
-            print(f"[Settler] ✅ Coupon #{p['id']} ({p.get('match_name')} - {pred}) -> Statut: {status_val}, Score: {formatted_score}")
+            print(f"[Settler] ✅ Coupon #{p['id']} ({p.get('match_name')} - {p['prediction_type']}) -> Statut: {status_val}, Score: {formatted_score}")
+
+        # 4. Traitement des matchs annulés ou reportés
+        elif status_type in ["canceled", "postponed", "interrupted"]:
+            execute(
+                "UPDATE predictions_history SET status = 'Annulé' WHERE id = %s",
+                (p["id"],)
+            )
+            print(f"[Settler] ⚠️ Coupon #{p['id']} ({p.get('match_name')}) -> Match Annulé/Reporté")
+
 
 if __name__ == "__main__":
     async def run_cron():

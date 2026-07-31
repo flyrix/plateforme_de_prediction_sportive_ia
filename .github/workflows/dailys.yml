@@ -26,6 +26,7 @@ jobs:
       - name: Execute Daily Job
         env:
           SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PYTHONPATH: ia_betpredict/backend
         run: |

@@ -25,6 +25,7 @@ let activeLeague = "all";
 let activeDate   = new Date().toISOString().split("T")[0];
 let activeStatus = "";
 
+// Éléments du DOM
 const $loading      = document.getElementById("loading");
 const $empty        = document.getElementById("empty");
 const $grid         = document.getElementById("coupons-grid");
@@ -38,6 +39,7 @@ function getFiltersContainer() {
   return document.getElementById("filters-container") || document.querySelector(".filters-inner");
 }
 
+// Initialisation de l'application
 document.addEventListener("DOMContentLoaded", async () => {
   setTodayLabel();
   setupFilterDelegation();
@@ -50,6 +52,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadCoupons();
 });
 
+/**
+ * Configure les écouteurs sur les contrôles (Date, Statut)
+ */
 function setupControls() {
   if ($dateInput) {
     $dateInput.addEventListener("change", (e) => {
@@ -66,12 +71,18 @@ function setupControls() {
   }
 }
 
+/**
+ * Détermine si la ligue appartient au groupe USA
+ */
 function isUSALeague(leagueName) {
   if (!leagueName) return false;
   const l = String(leagueName).toUpperCase();
   return l.includes("MLS") || l.includes("USL") || l.includes("NPSL") || l.includes("USA");
 }
 
+/**
+ * Gestion événementielle déléguée pour les boutons de filtres ligues
+ */
 function setupFilterDelegation() {
   const container = getFiltersContainer();
   if (!container) return;
@@ -88,9 +99,11 @@ function setupFilterDelegation() {
   });
 }
 
+/**
+ * Effectue une requête fetch avec stratégie de retry et gestion de timeout (dédié au cold start Render)
+ */
 async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, timeoutMs = 60000) {
   const controller = new AbortController();
-  // 60 secondes pour laisser le temps au cold-start de Render de se terminer
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -114,9 +127,8 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, ti
   } catch (err) {
     clearTimeout(timeoutId);
 
-    // Si la requête a été interrompue par timeout ou navigation, on retente
     if (retries > 0) {
-      console.warn(`[app] Réveil / Connexion API (${err.message})... Tentative restante: ${retries}`);
+      console.warn(`[app] Connexion API (${err.message})... Tentatives restantes: ${retries}`);
       await new Promise(resolve => setTimeout(resolve, backoff));
       return fetchWithRetry(url, options, retries - 1, backoff * 1.5, timeoutMs);
     }
@@ -125,6 +137,9 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, ti
   }
 }
 
+/**
+ * Affiche la date d'aujourd'hui dans le header
+ */
 function setTodayLabel() {
   const label = document.getElementById("today-label");
   if (label) {
@@ -134,6 +149,9 @@ function setTodayLabel() {
   }
 }
 
+/**
+ * Charge les coupons depuis l'API selon les critères sélectionnés
+ */
 async function loadCoupons() {
   showState("loading");
 
@@ -143,7 +161,6 @@ async function loadCoupons() {
       url += `?status=${encodeURIComponent(activeStatus)}`;
     }
 
-    // Passage du délai à 60000ms (60s) pour éviter l'annulation prématurée
     const dailyData = await fetchWithRetry(url, {}, 3, 3000, 60000);
     allCoupons = dailyData.coupons || [];
 
@@ -153,10 +170,13 @@ async function loadCoupons() {
 
   } catch (err) {
     console.error("[app] Erreur de chargement :", err);
-    showState("error", "Le serveur prend du temps à répondre. Veuillez rafraîchir la page dans un instant.");
+    showState("error", "Le serveur met du temps à répondre. Veuillez rafraîchir dans quelques instants.");
   }
 }
 
+/**
+ * Génère dynamiquement les boutons de filtre des ligues
+ */
 function generateDynamicFilters() {
   const container = getFiltersContainer();
   if (!container) return;
@@ -187,6 +207,9 @@ function generateDynamicFilters() {
   container.innerHTML = buttonsHtml;
 }
 
+/**
+ * Filtre et injecte les cartes de coupons dans le DOM
+ */
 function renderCoupons() {
   let filtered = allCoupons;
 
@@ -204,6 +227,7 @@ function renderCoupons() {
   showState("grid");
   $grid.innerHTML = filtered.map(couponCard).join("");
 
+  // Animation progressive des barres de confiance
   requestAnimationFrame(() => {
     document.querySelectorAll(".confidence-bar-fill").forEach(bar => {
       const w = bar.dataset.width;
@@ -212,12 +236,18 @@ function renderCoupons() {
   });
 }
 
+/**
+ * Normalise le taux de confiance entre 0.0 et 1.0
+ */
 function getConfidenceRate(c) {
   const raw = c.confidence_rate !== undefined ? c.confidence_rate : c.confidence;
   const num = Number(raw) || 0;
   return num > 1 ? num / 100 : num;
 }
 
+/**
+ * Modèle HTML d'une carte de coupon
+ */
 function couponCard(c) {
   const confidence = getConfidenceRate(c);
   const pct        = Math.round(confidence * 100);
@@ -236,18 +266,18 @@ function couponCard(c) {
     "Annulé":     "annule",
   }[statusText] || "attente";
 
-  // Détection du Score : remplace "VS" si présent
+  // Formatage du score
   const hasScore = c.score || (c.home_score !== undefined && c.away_score !== undefined && c.home_score !== null);
   const scoreDisplay = c.score || `${c.home_score} - ${c.away_score}`;
   const centerLabel = hasScore 
-    ? `<span class="score-badge" style="background:#2d3748; color:#00ff88; font-weight:bold; padding:2px 8px; border-radius:6px;">${escapeHtml(scoreDisplay)}</span>`
+    ? `<span class="score-badge">${escapeHtml(scoreDisplay)}</span>`
     : `<span class="vs-label">VS</span>`;
 
   return `
   <div class="coupon-card ${tierClass}">
     <div class="coupon-header">
       <span class="league-badge">${flag} ${escapeHtml(c.league || "")}</span>
-      <span class="match-time">${escapeHtml(c.match_time || "--:--")}</span>
+      <span class="match-time">🕒 ${escapeHtml(c.match_time || "--:--")}</span>
     </div>
   
     <div class="teams-row">
@@ -274,6 +304,9 @@ function couponCard(c) {
   </div>`;
 }
 
+/**
+ * Nettoie les chaînes de caractères pour éviter les vulnérabilités XSS
+ */
 function escapeHtml(value) {
   return String(value || "").replace(/[&<>"']/g, char => ({
     "&": "&amp;",
@@ -284,6 +317,9 @@ function escapeHtml(value) {
   }[char]));
 }
 
+/**
+ * Calcule et met à jour le bloc de statistiques globales
+ */
 function updateStats() {
   if (allCoupons.length === 0) {
     if ($total) $total.textContent = "0";
@@ -302,6 +338,9 @@ function updateStats() {
   if ($best)  $best.textContent  = Math.round(max * 100) + "%";
 }
 
+/**
+ * Alterne le statut d'affichage des conteneurs (Chargement / Vide / Grille / Erreur)
+ */
 function showState(state, message = "") {
   if ($loading) $loading.style.display = state === "loading" ? "flex"  : "none";
   if ($empty)   $empty.style.display   = state === "empty"   ? "block" : "none";
