@@ -1,7 +1,8 @@
 """
 scraper.py
 ----------
-Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore + ScraperAPI.
+Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore.
+Système de Scraping Hybride Resilient : ScrapingAnt (Prioritaire) -> ScraperAPI (Fallback).
 Incorpore l'extraction automatique des cotes via Sofascore avec Fallback vers Odds-API.io
 pour le calcul de l'Expected Value (EV).
 """
@@ -35,9 +36,11 @@ SEASON_OVERRIDES: dict[int, int] = {}
 FORM_WINDOW = 5
 
 # Clés API d'environnement
+SCRAPINGANT_KEY = os.getenv("SCRAPINGANT_KEY", "").strip()
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "").strip()
 
+print(f"[DEBUG] SCRAPINGANT_KEY présente ? {'OUI' if SCRAPINGANT_KEY else 'NON (VIDE)'}")
 print(f"[DEBUG] SCRAPER_API_KEY présente ? {'OUI' if SCRAPER_API_KEY else 'NON (VIDE)'}")
 print(f"[DEBUG] ODDS_API_KEY présente ? {'OUI' if ODDS_API_KEY else 'NON (VIDE)'}")
 
@@ -55,14 +58,25 @@ CACHE = {}
 ODDS_API_CACHE = {}
 
 
-def _get(url: str, retries: int = 2) -> dict | None:
-    if url in CACHE:
-        return CACHE[url]
+# ==========================================
+# MODULES RESILIENTS DE SCRAPING (FAILOVER)
+# ==========================================
 
-    if not SCRAPER_API_KEY:
-        print("[scraper] ❌ Pas de SCRAPER_API_KEY configurée.")
+def _fetch_via_scrapingant(url: str, timeout: int = 25) -> dict | None:
+    """Tentative via ScrapingAnt (Prioritaire)."""
+    if not SCRAPINGANT_KEY:
         return None
+    encoded_url = quote(url, safe='')
+    ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
+    resp = SESSION.get(ant_url, timeout=timeout)
+    if resp.status_code == 200:
+        return resp.json()
+    return None
 
+def _fetch_via_scraperapi(url: str, timeout: int = 25) -> dict | None:
+    """Tentative via ScraperAPI (Fallback)."""
+    if not SCRAPER_API_KEY:
+        return None
     target_url = (
         f"http://api.scraperapi.com?"
         f"api_key={SCRAPER_API_KEY}"
@@ -70,25 +84,33 @@ def _get(url: str, retries: int = 2) -> dict | None:
         f"&keep_headers=true"
         f"&country_code=us"
     )
+    resp = SESSION.get(target_url, headers=HEADERS, timeout=timeout)
+    if resp.status_code == 200:
+        return resp.json()
+    return None
+
+def _get(url: str, retries: int = 2) -> dict | None:
+    if url in CACHE:
+        return CACHE[url]
+
+    # Ordre des providers: ScrapingAnt en 1er, ScraperAPI en 2nd
+    providers = [
+        ("ScrapingAnt", _fetch_via_scrapingant),
+        ("ScraperAPI", _fetch_via_scraperapi)
+    ]
 
     for attempt in range(retries):
-        try:
-            resp = SESSION.get(target_url, headers=HEADERS, timeout=25)
-            if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                except Exception:
-                    CACHE[url] = None
-                    return None
-                CACHE[url] = data
-                return data
-            elif resp.status_code == 404:
-                CACHE[url] = None
-                return None
-        except Exception as exc:
-            print(f"[scraper] ⚠️ Exception {url} (tentative {attempt + 1}/{retries}): {exc!r}")
-            time.sleep(0.5)
+        for name, provider_func in providers:
+            try:
+                data = provider_func(url)
+                if data is not None:
+                    CACHE[url] = data
+                    return data
+            except Exception as exc:
+                print(f"[scraper] ⚠️ Erreur {name} pour {url} (Essai {attempt + 1}/{retries}) : {exc!r}")
+        time.sleep(0.5)
 
+    CACHE[url] = None
     return None
 
 
@@ -143,7 +165,6 @@ def fallback_odds_from_api(home_team: str, away_team: str) -> dict:
 
     parsed_odds = {}
     if best_match and "sites" in best_match:
-        # On parcourt les bookmakers pour extraire les premières cotes disponibles (ex: 1N2, Over/Under)
         for site in best_match.get("sites", []):
             odds = site.get("odds", {})
             
