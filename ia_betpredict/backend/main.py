@@ -326,12 +326,12 @@ async def daily_prediction_job():
             c.get("match_time", ""),
             c["prediction_type"],
             confidence,
-            c.get("status", "En attente"),
+            "En attente",  # ✅ Force la valeur autorisée par la contrainte PostgreSQL
             c.get("event_id"),
             c.get("odds", 1.0),
             c.get("ev", 0.0)
         ))
-
+        
     try:
         inserted = execute_batch(sql, params_list)
         print(f"[Cron] ✅ {inserted} Coupon(s) insérés/mis à jour avec succès.")
