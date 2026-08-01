@@ -1,12 +1,13 @@
 /**
  * app.js — IA-BetPredict Frontend
- * Mode 100% BDD Neon + Filtres Dynamiques & Affichage du Score
+ * Mode BDD Neon + Filtres Dynamiques, Score, Cotes & Value Bets
  */
 
 const RENDER_API_URL = "https://plateforme-de-prediction-sportive-ia.onrender.com";
 const API_BASE = window.ENV_API_BASE || RENDER_API_URL;
-console.log(`[app] API_BASE=${API_BASE}`);
+console.log(`[app] Initialisation avec API_BASE = ${API_BASE}`);
 
+// Dictionnaire des drapeaux / icônes de ligue
 const LEAGUE_FLAGS = {
   "USA":               "🇺🇸",
   "MLS":               "🇺🇸",
@@ -18,8 +19,13 @@ const LEAGUE_FLAGS = {
   "Eliteserien":       "🇳🇴",
   "Serie A Brasil":    "🇧🇷",
   "Club Friendlies":   "🤝",
+  "Premier League":    "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+  "LaLiga":            "🇪🇸",
+  "Bundesliga":        "🇩🇪",
+  "Serie A":           "🇮🇹",
 };
 
+// État global de l'application
 let allCoupons   = [];
 let activeLeague = "all";
 let activeDate   = new Date().toISOString().split("T")[0];
@@ -39,7 +45,7 @@ function getFiltersContainer() {
   return document.getElementById("filters-container") || document.querySelector(".filters-inner");
 }
 
-// Initialisation de l'application
+// Initialisation au chargement de la page
 document.addEventListener("DOMContentLoaded", async () => {
   setTodayLabel();
   setupFilterDelegation();
@@ -53,7 +59,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 /**
- * Configure les écouteurs sur les contrôles (Date, Statut)
+ * Configure les écouteurs d'événements sur les contrôles (Date et Statut)
  */
 function setupControls() {
   if ($dateInput) {
@@ -72,7 +78,7 @@ function setupControls() {
 }
 
 /**
- * Détermine si la ligue appartient au groupe USA
+ * Vérifie si la ligue correspond au groupe USA / Nord-Américain
  */
 function isUSALeague(leagueName) {
   if (!leagueName) return false;
@@ -81,7 +87,7 @@ function isUSALeague(leagueName) {
 }
 
 /**
- * Gestion événementielle déléguée pour les boutons de filtres ligues
+ * Gestion événementielle déléguée pour les boutons de filtre de ligue
  */
 function setupFilterDelegation() {
   const container = getFiltersContainer();
@@ -100,7 +106,7 @@ function setupFilterDelegation() {
 }
 
 /**
- * Effectue une requête fetch avec stratégie de retry et gestion de timeout (dédié au cold start Render)
+ * Requête fetch optimisée avec retry (pour gérer le Cold Start de Render)
  */
 async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, timeoutMs = 60000) {
   const controller = new AbortController();
@@ -128,7 +134,7 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, ti
     clearTimeout(timeoutId);
 
     if (retries > 0) {
-      console.warn(`[app] Connexion API (${err.message})... Tentatives restantes: ${retries}`);
+      console.warn(`[app] Nouvelle tentative d'accès à l'API... Essais restants : ${retries}`);
       await new Promise(resolve => setTimeout(resolve, backoff));
       return fetchWithRetry(url, options, retries - 1, backoff * 1.5, timeoutMs);
     }
@@ -138,7 +144,7 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, ti
 }
 
 /**
- * Affiche la date d'aujourd'hui dans le header
+ * Met à jour la date courante affichée dans le header
  */
 function setTodayLabel() {
   const label = document.getElementById("today-label");
@@ -150,7 +156,7 @@ function setTodayLabel() {
 }
 
 /**
- * Charge les coupons depuis l'API selon les critères sélectionnés
+ * Charge la liste des coupons depuis le backend
  */
 async function loadCoupons() {
   showState("loading");
@@ -169,13 +175,13 @@ async function loadCoupons() {
     updateStats();
 
   } catch (err) {
-    console.error("[app] Erreur de chargement :", err);
-    showState("error", "Le serveur met du temps à répondre. Veuillez rafraîchir dans quelques instants.");
+    console.error("[app] Échec du chargement des coupons :", err);
+    showState("error", "Le serveur backend prend du temps à répondre (Cold Start). Veuillez rafraîchir dans un instant.");
   }
 }
 
 /**
- * Génère dynamiquement les boutons de filtre des ligues
+ * Génération dynamique des boutons de filtres selon les ligues disponibles
  */
 function generateDynamicFilters() {
   const container = getFiltersContainer();
@@ -208,7 +214,7 @@ function generateDynamicFilters() {
 }
 
 /**
- * Filtre et injecte les cartes de coupons dans le DOM
+ * Rendu des cartes de coupons filtrées dans le DOM
  */
 function renderCoupons() {
   let filtered = allCoupons;
@@ -227,7 +233,7 @@ function renderCoupons() {
   showState("grid");
   $grid.innerHTML = filtered.map(couponCard).join("");
 
-  // Animation progressive des barres de confiance
+  // Animation fluide de remplissage des barres de confiance
   requestAnimationFrame(() => {
     document.querySelectorAll(".confidence-bar-fill").forEach(bar => {
       const w = bar.dataset.width;
@@ -237,7 +243,7 @@ function renderCoupons() {
 }
 
 /**
- * Normalise le taux de confiance entre 0.0 et 1.0
+ * Normalise la valeur de confiance entre 0.0 et 1.0
  */
 function getConfidenceRate(c) {
   const raw = c.confidence_rate !== undefined ? c.confidence_rate : c.confidence;
@@ -246,7 +252,7 @@ function getConfidenceRate(c) {
 }
 
 /**
- * Modèle HTML d'une carte de coupon
+ * Génère la structure HTML d'une carte de coupon individuelle
  */
 function couponCard(c) {
   const confidence = getConfidenceRate(c);
@@ -266,12 +272,16 @@ function couponCard(c) {
     "Annulé":     "annule",
   }[statusText] || "attente";
 
-  // Formatage du score
+  // Score du match (s'il est terminé ou en cours)
   const hasScore = c.score || (c.home_score !== undefined && c.away_score !== undefined && c.home_score !== null);
   const scoreDisplay = c.score || `${c.home_score} - ${c.away_score}`;
   const centerLabel = hasScore 
     ? `<span class="score-badge">${escapeHtml(scoreDisplay)}</span>`
     : `<span class="vs-label">VS</span>`;
+
+  // Cote et Value Bet
+  const oddsDisplay = c.odds && c.odds > 1.0 ? `<span class="odds-badge">Cote: ${Number(c.odds).toFixed(2)}</span>` : '';
+  const isValueBet = c.is_value_bet ? `<span class="value-bet-badge">🔥 Value Bet</span>` : '';
 
   return `
   <div class="coupon-card ${tierClass}">
@@ -291,7 +301,11 @@ function couponCard(c) {
     <div class="prediction-row">
       <div>
         <div class="prediction-label">Pari recommandé</div>
-        <div class="prediction-type">${escapeHtml(c.prediction_type || c.type || "")}</div>
+        <div class="prediction-type">
+          ${escapeHtml(c.prediction_type || c.type || "")}
+          ${oddsDisplay}
+          ${isValueBet}
+        </div>
         <span class="status-badge ${statusClass}">${escapeHtml(statusText)}</span>
       </div>
       <div class="confidence-block">
@@ -305,7 +319,7 @@ function couponCard(c) {
 }
 
 /**
- * Nettoie les chaînes de caractères pour éviter les vulnérabilités XSS
+ * Échappe le texte pour prévenir les failles XSS
  */
 function escapeHtml(value) {
   return String(value || "").replace(/[&<>"']/g, char => ({
@@ -318,7 +332,7 @@ function escapeHtml(value) {
 }
 
 /**
- * Calcule et met à jour le bloc de statistiques globales
+ * Met à jour le bloc des statistiques globales de la page
  */
 function updateStats() {
   if (allCoupons.length === 0) {
@@ -339,7 +353,7 @@ function updateStats() {
 }
 
 /**
- * Alterne le statut d'affichage des conteneurs (Chargement / Vide / Grille / Erreur)
+ * Bascule l'affichage des conteneurs selon l'état actuel (Loading, Empty, Grid, Error)
  */
 function showState(state, message = "") {
   if ($loading) $loading.style.display = state === "loading" ? "flex"  : "none";

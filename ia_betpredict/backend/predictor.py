@@ -1,14 +1,25 @@
 """
 predictor.py
 ------------
-Charge les modèles XGBoost (.pkl) et expose une fonction unique
+Charge les modèles XGBoost / Scikit-Learn (.pkl) et expose la fonction unique
 generate_coupons(match) qui retourne les paris éligibles selon les
 seuils de confiance définis dans le cahier des charges.
+
+Prend en charge les modèles spécialisés par groupe de ligues :
+- Nordique
+- Américain
+- Sud-Américain
+- Amicaux
+- Top 5 Europe (Premier League, LaLiga, Bundesliga, Serie A)
+- Global (Fallback)
 """
 
 import os
 import math
 import logging
+import random
+from typing import Any
+
 import joblib
 import pandas as pd
 
@@ -20,7 +31,7 @@ logger = logging.getLogger("predictor")
 # Seuils de confiance (règles métier du CDC)
 # ---------------------------------------------------------------------------
 
-THRESHOLDS = {
+THRESHOLDS: dict[str, float] = {
     "Double Chance 1X": 0.50,
     "Double Chance X2": 0.50,
     "Over 2.5":         0.50,
@@ -36,12 +47,31 @@ COUNTRY_ENCODING: dict[str, int] = {}
 # Mapping ligue → groupe (pour charger le bon modèle spécialisé)
 # ---------------------------------------------------------------------------
 
-LEAGUE_TO_GROUP = {
-    "Veikkausliiga":   "nordique",
-    "Eliteserien":     "nordique",
-    "MLS":             "americain",
-    "Serie A Brasil":  "sud_americain",
-    "Club Friendlies": "amicaux",
+LEAGUE_TO_GROUP: dict[str, str] = {
+    # Nordique
+    "Veikkausliiga":         "nordique",
+    "Eliteserien":           "nordique",
+
+    # Américain
+    "MLS":                   "americain",
+    "USL Championship":      "americain",
+    "USL League One":        "americain",
+    "USL League Two":        "americain",
+    "NPSL":                  "americain",
+
+    # Sud-Américain
+    "Serie A Brasil":        "sud_americain",
+
+    # Amicaux
+    "Club Friendlies":       "amicaux",
+    "Women Club Friendlies": "amicaux",
+
+    # Top 5 Europe
+    "Premier League":        "europe_top5",
+    "LaLiga":                "europe_top5",
+    "Liga":                  "europe_top5",
+    "Bundesliga":            "europe_top5",
+    "Serie A":               "europe_top5",
 }
 
 # ---------------------------------------------------------------------------
@@ -51,19 +81,28 @@ LEAGUE_TO_GROUP = {
 _MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models")
 
 
-def _load(filename: str):
-    path = os.path.normpath(os.path.join(_MODELS_DIR, filename))
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
+def _load(filename: str) -> Any:
+    """Charge un fichier .pkl en testant d'abord le dossier /models/, puis la racine."""
+    path_in_models = os.path.normpath(os.path.join(_MODELS_DIR, filename))
+    path_root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), filename))
+    
+    if os.path.exists(path_in_models):
+        target_path = path_in_models
+    elif os.path.exists(path_root):
+        target_path = path_root
+    else:
+        raise FileNotFoundError(f"Modèle introuvable: {filename}")
+
     try:
-        return joblib.load(path)
+        return joblib.load(target_path)
     except ModuleNotFoundError as exc:
         if exc.name == "xgboost":
+            logger.error("Le module xgboost n'est pas installé dans le virtuel environnement.")
             raise
         raise
 
 
-def _load_group(group: str) -> dict | None:
+def _load_group(group: str) -> dict[str, Any] | None:
     """Charge les 3 modèles spécialisés pour un groupe. Retourne None si absents."""
     try:
         return {
@@ -71,15 +110,18 @@ def _load_group(group: str) -> dict | None:
             "over": _load(f"model_goals_{group}.pkl"),
             "btts": _load(f"model_btts_{group}.pkl"),
         }
-    except (FileNotFoundError, ModuleNotFoundError):
+    except (FileNotFoundError, ModuleNotFoundError) as e:
+        logger.debug(f"Impossible de charger le groupe '{group}': {e}")
         return None
 
 
-# Chargement de tous les groupes spécialisés (y compris 'global')
-_SPECIALIZED: dict[str, dict] = {}
+# Chargement de tous les groupes spécialisés (y compris 'europe_top5' et 'global')
+_SPECIALIZED: dict[str, dict[str, Any]] = {}
 _LEGACY_WINNER_WARNING_EMITTED = False
 
-for _g in ["nordique", "americain", "sud_americain", "amicaux", "global"]:
+GROUPS_TO_LOAD = ["europe_top5", "nordique", "americain", "sud_americain", "amicaux", "global"]
+
+for _g in GROUPS_TO_LOAD:
     _m = _load_group(_g)
     if _m:
         _SPECIALIZED[_g] = _m
@@ -90,7 +132,7 @@ if "global" in _SPECIALIZED or len(_SPECIALIZED) > 0:
     _MODELS_LOADED = True
     _GLOBAL = _SPECIALIZED.get("global")
 else:
-    logger.warning("⚠️ Aucun modèle trouvé dans le dossier /models/. MODE DÉMO activé.")
+    logger.warning("⚠️ Aucun modèle trouvé dans le dossier /models/ ni à la racine. MODE DÉMO activé.")
     _GLOBAL = None
     _MODELS_LOADED = False
 
@@ -99,7 +141,7 @@ else:
 # Features attendues par les modèles
 # ---------------------------------------------------------------------------
 
-FEATURE_COLUMNS = [
+FEATURE_COLUMNS: list[str] = [
     "home_goals_exp",    "away_goals_exp",
     "diff_goals_exp",    "total_goals_exp",
     "home_conceded_exp", "away_conceded_exp",
@@ -114,10 +156,10 @@ FEATURE_COLUMNS = [
     "btts_rate_diff",    "over25_rate_diff",
 ]
 
-FEATURE_COLUMNS_LEGACY = FEATURE_COLUMNS + ["Country_encoded"]
+FEATURE_COLUMNS_LEGACY: list[str] = FEATURE_COLUMNS + ["Country_encoded"]
 
 
-def _model_feature_names(model) -> list[str] | None:
+def _model_feature_names(model: Any) -> list[str] | None:
     """Récupère la liste exacte des features attendues directement depuis le modèle."""
     names = getattr(model, "feature_names_in_", None)
     if names is not None:
@@ -131,16 +173,17 @@ def _model_feature_names(model) -> list[str] | None:
     return None
 
 
-def _features_to_df(features: dict, model=None, legacy: bool = False) -> pd.DataFrame:
+def _features_to_df(features: dict[str, Any], model: Any = None, legacy: bool = False) -> pd.DataFrame:
+    """Convertit le dictionnaire de caractéristiques en un DataFrame aligné sur le modèle."""
     cols = _model_feature_names(model) if model is not None else None
     if not cols:
         cols = FEATURE_COLUMNS_LEGACY if legacy else FEATURE_COLUMNS
-        logger.warning(f"Colonnes du modèle non détectables, repli sur la liste par défaut ({len(cols)} features).")
+        logger.debug(f"Colonnes du modèle non détectables, repli sur la liste par défaut ({len(cols)} features).")
     
     row = {col: features.get(col, 0.0) for col in cols}
     missing = [c for c in cols if c not in features]
     if missing:
-        logger.warning(f"Features absentes du dictionnaire, valeur 0.0 utilisée: {missing}")
+        logger.debug(f"Features absentes du dictionnaire, valeur 0.0 utilisée: {missing}")
     
     return pd.DataFrame([row])
 
@@ -149,20 +192,21 @@ def _features_to_df(features: dict, model=None, legacy: bool = False) -> pd.Data
 # Génération des prédictions
 # ---------------------------------------------------------------------------
 
-def _predict_proba_dict(model, X) -> dict:
+def _predict_proba_dict(model: Any, X: pd.DataFrame) -> dict[str, float]:
     """Retourne un dict classe -> probabilité pour un modèle binaire ou multiclasse."""
     probs = model.predict_proba(X)[0]
-    classes = list(model.classes_)
+    classes = list(getattr(model, "classes_", range(len(probs))))
     if len(classes) != len(probs):
         raise ValueError("Incohérence entre classes et probabilités du modèle")
-    return {classes[i]: float(probs[i]) for i in range(len(classes))}
+    return {str(classes[i]): float(probs[i]) for i in range(len(classes))}
 
 
-def _class_probability(probas: dict, class_id: int) -> float:
-    return float(probas.get(class_id, probas.get(str(class_id), 0.0)))
+def _class_probability(probas: dict[str, float], class_id: int | str) -> float:
+    """Extrait la probabilité d'une classe sous forme de float."""
+    return float(probas.get(str(class_id), 0.0))
 
 
-def _double_chance_predictions(model, X) -> dict:
+def _double_chance_predictions(model: Any, X: pd.DataFrame) -> dict[str, float]:
     """
     Calcule 1X/X2 depuis un modèle résultat 3 classes :
       0 = domicile, 1 = nul, 2 = extérieur.
@@ -171,7 +215,7 @@ def _double_chance_predictions(model, X) -> dict:
     global _LEGACY_WINNER_WARNING_EMITTED
 
     probs = _predict_proba_dict(model, X)
-    class_labels = {str(label) for label in probs.keys()}
+    class_labels = set(probs.keys())
 
     if {"0", "1", "2"}.issubset(class_labels):
         home = _class_probability(probs, 0)
@@ -196,13 +240,12 @@ def _double_chance_predictions(model, X) -> dict:
     raise ValueError(f"Classes inattendues pour model_winner: {sorted(class_labels)}")
 
 
-def predict_match(features: dict, league: str = "") -> dict:
+def predict_match(features: dict[str, Any], league: str = "") -> dict[str, float]:
     """
     Utilise le modèle spécialisé pour la ligue si disponible, sinon le modèle 'global'.
     """
     if not _MODELS_LOADED and not _SPECIALIZED:
-        import random
-        logger.warning("MODE DÉMO activé")
+        logger.warning("MODE DÉMO activé - Génération de probabilités aléatoires.")
         
         # En mode Démo, on tire au sort 1X ou X2 pour ne garder qu'une seule Double Chance
         dc_choice = "Double Chance 1X" if random.random() > 0.5 else "Double Chance X2"
@@ -212,8 +255,16 @@ def predict_match(features: dict, league: str = "") -> dict:
             "BTTS":             round(random.uniform(0.45, 0.85), 4),
         }
 
-    # Sélection du modèle : spécialisé > global
+    # Détermination du groupe ciblé (Ex: Premier League -> europe_top5)
     group = LEAGUE_TO_GROUP.get(league, "")
+    
+    # Fallback dynamique au cas où le nom du championnat diffère légèrement
+    if not group and league:
+        for l_name, g_name in LEAGUE_TO_GROUP.items():
+            if l_name.lower() in league.lower():
+                group = g_name
+                break
+
     models = (
         _SPECIALIZED.get(group)
         or _SPECIALIZED.get("global")
@@ -250,7 +301,7 @@ def predict_match(features: dict, league: str = "") -> dict:
     }
 
 
-def generate_coupons(match: dict, require_value_bet: bool = True) -> list[dict]:
+def generate_coupons(match: dict[str, Any], require_value_bet: bool = True) -> list[dict[str, Any]]:
     """
     Applique les seuils métier et calcule l'EV si la cote est présente.
     Structure de clés 100% alignée avec main.py et Neon.
@@ -277,8 +328,8 @@ def generate_coupons(match: dict, require_value_bet: bool = True) -> list[dict]:
                         "match_time":      match.get("match_time"),
                         "prediction_type": market,
                         "confidence_rate": confidence,
-                        "odds":            bookmaker_odd,          # Alignement avec main.py (odds au lieu de odd)
-                        "ev":              round(ev, 4),           # Alignement avec main.py (ev au lieu de expected_value)
+                        "odds":            bookmaker_odd,          # Alignement avec main.py
+                        "ev":              round(ev, 4),           # Alignement avec main.py
                         "expected_value":  round(ev, 4),
                         "is_value_bet":    True,
                         "status":          match.get("status", "En attente"),
