@@ -66,11 +66,20 @@ def _fetch_via_scrapingant(url: str, timeout: int = 25) -> dict | None:
     """Tentative via ScrapingAnt (Prioritaire)."""
     if not SCRAPINGANT_KEY:
         return None
+    
     encoded_url = quote(url, safe='')
+    # On précise à ScrapingAnt d'utiliser les mêmes headers et de ne pas parser le HTML
     ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
-    resp = SESSION.get(ant_url, timeout=timeout)
-    if resp.status_code == 200:
-        return resp.json()
+    
+    try:
+        resp = SESSION.get(ant_url, headers=HEADERS, timeout=timeout)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            print(f"[scraper] ⚠️ ScrapingAnt Code Status: {resp.status_code}")
+    except Exception as e:
+        print(f"[scraper] ⚠️ ScrapingAnt Erreur: {e}")
+        
     return None
 
 def _fetch_via_scraperapi(url: str, timeout: int = 25) -> dict | None:
