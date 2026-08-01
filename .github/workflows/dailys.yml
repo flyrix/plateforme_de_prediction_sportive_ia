@@ -24,11 +24,11 @@ jobs:
           pip install -r requirements.txt
 
       - name: Execute Daily Job
+        working-directory: ia_betpredict/backend
         env:
           SCRAPINGANT_KEY: ${{ secrets.SCRAPINGANT_KEY }}
           SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          PYTHONPATH: ia_betpredict/backend
         run: |
           python main.py
