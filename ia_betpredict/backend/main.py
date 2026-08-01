@@ -25,7 +25,7 @@ from db import execute, execute_batch
 app = FastAPI(
     title="IA-BetPredict API",
     description="Prédictions sportives par XGBoost - EV & Historique de Value Bets",
-    version="1.4.1",
+    version="1.5.0",
 )
 
 # CORS
@@ -94,14 +94,24 @@ async def root():
 
 @app.get("/coupons", tags=["Coupons"])
 async def get_todays_coupons(
-    league: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    min_confidence: float = Query(default=0.0, ge=0, le=1),
-    min_ev: float = Query(default=0.0, description="Filtrer par EV minimum (ex: 0.05 pour +5%)"),
+    league: str | None = Query(default=None, description="Filtrer par ligue"),
+    status: str | None = Query(default=None, description="Statut : 'En attente', 'Gagné', 'Perdu'"),
+    min_confidence: float = Query(default=0.50, ge=0.0, le=1.0, description="Confiance min (ex: 0.50)"),
+    min_ev: float = Query(default=None, description="EV min (ex: 0.02 pour +2%)"),
 ):
-    """Récupère les coupons du jour stockés en base Neon."""
+    """
+    Renvoie les coupons du jour. 
+    Si la BDD ne contient aucun coupon aujourd'hui, renvoie automatiquement
+    ceux de la journée la plus récente disponible.
+    """
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    return _fetch_coupons(today, league, status, min_confidence, min_ev)
+    return _fetch_coupons(
+        target_date=today,
+        league=league,
+        status=status,
+        min_confidence=min_confidence,
+        min_ev=min_ev
+    )
 
 
 @app.get("/coupons/{date}", tags=["Coupons"])
@@ -109,34 +119,86 @@ async def get_coupons_by_date(
     date: str,
     league: str | None = Query(default=None),
     status: str | None = Query(default=None),
-    min_confidence: float = Query(default=0.0, ge=0, le=1),
-    min_ev: float = Query(default=0.0, description="Filtrer par EV minimum (ex: 0.05 pour +5%)"),
+    min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
+    min_ev: float | None = Query(default=None, description="Filtrer par EV minimum"),
 ):
     """Récupère les coupons d'une date spécifique (ex: résultats d'hier)."""
     try:
         datetime.date.fromisoformat(date)
     except ValueError:
         raise HTTPException(status_code=400, detail="Format de date invalide. Utilisez YYYY-MM-DD.")
-    return _fetch_coupons(date, league, status, min_confidence, min_ev)
+    return _fetch_coupons(
+        target_date=date,
+        league=league,
+        status=status,
+        min_confidence=min_confidence,
+        min_ev=min_ev,
+        allow_fallback=False
+    )
 
 
-def _fetch_coupons(match_date: str, league: str | None, status: str | None, min_confidence: float, min_ev: float) -> dict:
+def _fetch_coupons(
+    target_date: str, 
+    league: str | None = None, 
+    status: str | None = None, 
+    min_confidence: float = 0.50, 
+    min_ev: float | None = None,
+    allow_fallback: bool = True
+) -> dict:
+    """
+    Récupère les coupons en BDD.
+    Si aucun coupon n'est trouvé pour 'target_date' et que allow_fallback=True,
+    bascule automatiquement sur les coupons de la dernière date disponible.
+    """
     try:
-        query = "SELECT * FROM predictions_history WHERE match_date = %s AND confidence_rate >= %s AND expected_value >= %s"
-        params = [match_date, min_confidence, min_ev]
+        base_conditions = ["confidence_rate >= %s"]
+        params = [min_confidence]
 
+        if min_ev is not None:
+            base_conditions.append("expected_value >= %s")
+            params.append(min_ev)
         if league:
-            query += " AND league = %s"
-            params.append(league)
-
+            base_conditions.append("league ILIKE %s")
+            params.append(f"%{league}%")
         if status:
-            query += " AND status = %s"
+            base_conditions.append("status = %s")
             params.append(status)
 
-        query += " ORDER BY expected_value DESC, confidence_rate DESC"
+        where_clause = " AND ".join(base_conditions)
 
-        rows = execute(query, tuple(params), fetch=True)
-        return {"date": match_date, "count": len(rows), "coupons": rows}
+        # 1. Tentative pour la date cible
+        query_date = f"""
+            SELECT * FROM predictions_history 
+            WHERE match_date = %s AND {where_clause}
+            ORDER BY expected_value DESC, confidence_rate DESC
+        """
+        rows = execute(query_date, tuple([target_date] + params), fetch=True)
+
+        is_fallback = False
+        effective_date = target_date
+
+        # 2. Fallback si aucun coupon aujourd'hui
+        if not rows and allow_fallback:
+            latest_date_query = f"""
+                SELECT match_date FROM predictions_history 
+                WHERE {where_clause}
+                ORDER BY match_date DESC 
+                LIMIT 1
+            """
+            latest_date_res = execute(latest_date_query, tuple(params), fetch=True)
+
+            if latest_date_res:
+                effective_date = str(latest_date_res[0]["match_date"])
+                is_fallback = True
+                rows = execute(query_date, tuple([effective_date] + params), fetch=True)
+
+        return {
+            "requested_date": target_date,
+            "effective_date": effective_date,
+            "is_fallback": is_fallback,
+            "count": len(rows),
+            "coupons": rows
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erreur Neon : {exc}")
 
@@ -209,12 +271,11 @@ async def daily_prediction_job():
 
     all_coupons = []
     MIN_CONFIDENCE = 0.50  # Probabilité minimum du modèle (50%)
-    MIN_EV = 0.02          # EV minimum exigé (+2% de valeur)
 
     for match in upcoming_matches:
         try:
-            # require_value_bet=True : calcule l'EV si les cotes sont présentes
-            coupons = generate_coupons(match, require_value_bet=True)
+            # require_value_bet=False : génère le coupon MÊME SI la cote est manquante
+            coupons = generate_coupons(match, require_value_bet=False)
             
             # --- FILTRAGE ET ARBITRAGE DOUBLE CHANCE PAR MATCH ---
             coupons = filter_best_double_chance(coupons)
@@ -223,11 +284,11 @@ async def daily_prediction_job():
                 confidence = float(c.get("confidence_rate", 0))
                 odds = float(c.get("odds", 1.0))
                 
-                # Calcul dynamique de l'EV si pas déjà calculé dans predictor.py
+                # Calcul de l'EV (sera 0.0 si cote manquante ou = 1.0)
                 ev = float(c.get("ev", (confidence * odds) - 1.0)) if odds > 1.0 else 0.0
 
-                # On applique le filtre de valeur (EV) & de confiance
-                if confidence >= MIN_CONFIDENCE and ev >= MIN_EV:
+                # On insère dès que la confiance est >= 50%
+                if confidence >= MIN_CONFIDENCE:
                     c["event_id"] = match.get("event_id")
                     c["match_name"] = match.get("match_name") or f"{match.get('home_team')} - {match.get('away_team')}"
                     c["odds"] = odds
@@ -237,7 +298,7 @@ async def daily_prediction_job():
             print(f"[Cron] ⚠️ Erreur prédiction {match.get('match_name')} : {exc}")
 
     if not all_coupons:
-        print("[Cron] Aucun Value Bet (EV >= +2%) trouvé pour aujourd'hui.")
+        print("[Cron] Aucun coupon généré pour aujourd'hui.")
         return
 
     # Inscription BDD avec mise à jour des cotes et EV
@@ -265,7 +326,7 @@ async def daily_prediction_job():
             c.get("match_time", ""),
             c["prediction_type"],
             confidence,
-            "En attente",
+            c.get("status", "En attente"),
             c.get("event_id"),
             c.get("odds", 1.0),
             c.get("ev", 0.0)
@@ -273,7 +334,7 @@ async def daily_prediction_job():
 
     try:
         inserted = execute_batch(sql, params_list)
-        print(f"[Cron] ✅ {inserted} Value Bet(s) insérés/mis à jour avec succès.")
+        print(f"[Cron] ✅ {inserted} Coupon(s) insérés/mis à jour avec succès.")
     except Exception as exc:
         print(f"[Cron] ❌ Échec transaction BDD : {exc}")
         raise exc
