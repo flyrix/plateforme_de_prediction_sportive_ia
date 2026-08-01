@@ -2,7 +2,7 @@
 scraper.py
 ----------
 Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore.
-Système de Scraping Hybride Resilient : ScrapingAnt (Prioritaire) -> ScraperAPI (Fallback).
+Système de Scraping Hybride Résilient : ScrapingAnt (Prioritaire) -> ScraperAPI (Fallback 1) -> Direct (Fallback 2).
 Incorpore l'extraction automatique des cotes via Sofascore avec Fallback vers Odds-API.io
 pour le calcul de l'Expected Value (EV).
 """
@@ -62,19 +62,22 @@ ODDS_API_CACHE = {}
 # MODULES RESILIENTS DE SCRAPING (FAILOVER)
 # ==========================================
 
-def _fetch_via_scrapingant(url: str, timeout: int = 25) -> dict | None:
+def _fetch_via_scrapingant(url: str, timeout: int = 30) -> dict | None:
     """Tentative via ScrapingAnt (Prioritaire)."""
     if not SCRAPINGANT_KEY:
         return None
     
     encoded_url = quote(url, safe='')
-    # On précise à ScrapingAnt d'utiliser les mêmes headers et de ne pas parser le HTML
-    ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
+    # Passage en browser=true pour franchir la sécurité Cloudflare de Sofascore
+    ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=true"
     
     try:
-        resp = SESSION.get(ant_url, headers=HEADERS, timeout=timeout)
+        resp = SESSION.get(ant_url, timeout=timeout)
         if resp.status_code == 200:
             return resp.json()
+        elif resp.status_code == 423:
+            print("[scraper] ⚠️ ScrapingAnt bloqué/limite de concurrence atteinte (Code 423). Passage au fallback.")
+            return None
         else:
             print(f"[scraper] ⚠️ ScrapingAnt Code Status: {resp.status_code}")
     except Exception as e:
@@ -83,7 +86,7 @@ def _fetch_via_scrapingant(url: str, timeout: int = 25) -> dict | None:
     return None
 
 def _fetch_via_scraperapi(url: str, timeout: int = 25) -> dict | None:
-    """Tentative via ScraperAPI (Fallback)."""
+    """Tentative via ScraperAPI (Fallback 1)."""
     if not SCRAPER_API_KEY:
         return None
     target_url = (
@@ -93,19 +96,35 @@ def _fetch_via_scraperapi(url: str, timeout: int = 25) -> dict | None:
         f"&keep_headers=true"
         f"&country_code=us"
     )
-    resp = SESSION.get(target_url, headers=HEADERS, timeout=timeout)
-    if resp.status_code == 200:
-        return resp.json()
+    try:
+        resp = SESSION.get(target_url, headers=HEADERS, timeout=timeout)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            print(f"[scraper] ⚠️ ScraperAPI Code Status: {resp.status_code}")
+    except Exception as e:
+        print(f"[scraper] ⚠️ ScraperAPI Erreur: {e}")
+    return None
+
+def _fetch_direct(url: str, timeout: int = 15) -> dict | None:
+    """Tentative directe curl_cffi (Fallback 2)."""
+    try:
+        resp = SESSION.get(url, headers=HEADERS, timeout=timeout)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
     return None
 
 def _get(url: str, retries: int = 2) -> dict | None:
     if url in CACHE:
         return CACHE[url]
 
-    # Ordre des providers: ScrapingAnt en 1er, ScraperAPI en 2nd
+    # Ordre des providers: ScrapingAnt -> ScraperAPI -> Direct
     providers = [
         ("ScrapingAnt", _fetch_via_scrapingant),
-        ("ScraperAPI", _fetch_via_scraperapi)
+        ("ScraperAPI", _fetch_via_scraperapi),
+        ("Direct", _fetch_direct)
     ]
 
     for attempt in range(retries):
@@ -117,7 +136,7 @@ def _get(url: str, retries: int = 2) -> dict | None:
                     return data
             except Exception as exc:
                 print(f"[scraper] ⚠️ Erreur {name} pour {url} (Essai {attempt + 1}/{retries}) : {exc!r}")
-        time.sleep(0.5)
+        time.sleep(1.0)  # Pause pour réguler le taux de requêtes
 
     CACHE[url] = None
     return None
@@ -534,7 +553,8 @@ def fetch_matches_with_features(date_str: str | None = None) -> list[dict]:
         m["odds"]     = fetch_match_odds(m["event_id"], m["home_team"], m["away_team"])
         return m
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    # max_workers réduit à 2 pour ne pas surcharger les limites de requêtes simultanées des scrapers
+    with ThreadPoolExecutor(max_workers=2) as executor:
         processed_matches = list(executor.map(_process_match, upcoming_matches))
 
     return processed_matches
