@@ -23,6 +23,7 @@ const LEAGUE_FLAGS = {
   "LaLiga":            "🇪🇸",
   "Bundesliga":        "🇩🇪",
   "Serie A":           "🇮🇹",
+  "Ligue 1":           "🇫🇷",
 };
 
 // État global de l'application
@@ -106,7 +107,7 @@ function setupFilterDelegation() {
 }
 
 /**
- * Requête fetch optimisée avec retry (pour gérer le Cold Start de Render)
+ * Requête fetch optimisée avec retry & désactivation du cache navigateur
  */
 async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, timeoutMs = 60000) {
   const controller = new AbortController();
@@ -119,6 +120,7 @@ async function fetchWithRetry(url, options = {}, retries = 3, backoff = 3000, ti
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache', // Force la récupération des derniers dépouillements
         ...(options.headers || {}),
       },
     });
@@ -252,6 +254,24 @@ function getConfidenceRate(c) {
 }
 
 /**
+ * Normalise et retourne le statut propre ainsi que la classe CSS associée
+ */
+function getNormalizedStatus(statusRaw) {
+  const s = String(statusRaw || "En attente").trim().toLowerCase();
+
+  if (s.includes("gagn") || s === "won" || s === "win") {
+    return { text: "Gagné", class: "gagne" };
+  }
+  if (s.includes("perd") || s === "lost" || s === "loss") {
+    return { text: "Perdu", class: "perdu" };
+  }
+  if (s.includes("annul") || s.includes("postpon") || s.includes("cancel")) {
+    return { text: "Annulé", class: "annule" };
+  }
+  return { text: "En attente", class: "attente" };
+}
+
+/**
  * Génère la structure HTML d'une carte de coupon individuelle
  */
 function couponCard(c) {
@@ -263,25 +283,21 @@ function couponCard(c) {
   const barClass   = isHigh ? ""          : "mid";
   const flag       = LEAGUE_FLAGS[c.league] || (isUSALeague(c.league) ? "🇺🇸" : "⚽");
   
-  const statusText = typeof c.status === "string" ? c.status : "En attente";
-  
-  const statusClass = {
-    "En attente": "attente",
-    "Gagné":      "gagne",
-    "Perdu":      "perdu",
-    "Annulé":     "annule",
-  }[statusText] || "attente";
+  // Normalisation du statut (Résout le problème d'affichage Gagné / Perdu)
+  const { text: statusText, class: statusClass } = getNormalizedStatus(c.status);
 
-  // Score du match (s'il est terminé ou en cours)
-  const hasScore = c.score || (c.home_score !== undefined && c.away_score !== undefined && c.home_score !== null);
+  // Score du match
+  const hasScore = Boolean(c.score) || (c.home_score !== undefined && c.away_score !== undefined && c.home_score !== null);
   const scoreDisplay = c.score || `${c.home_score} - ${c.away_score}`;
   const centerLabel = hasScore 
-    ? `<span class="score-badge">${escapeHtml(scoreDisplay)}</span>`
+    ? `<span class="score-badge" style="font-weight:700; padding:2px 8px; border-radius:4px; background:rgba(255,255,255,0.1);">${escapeHtml(scoreDisplay)}</span>`
     : `<span class="vs-label">VS</span>`;
 
-  // Cote et Value Bet
-  const oddsDisplay = c.odds && c.odds > 1.0 ? `<span class="odds-badge">Cote: ${Number(c.odds).toFixed(2)}</span>` : '';
-  const isValueBet = c.is_value_bet ? `<span class="value-bet-badge">🔥 Value Bet</span>` : '';
+  // Cotes & Expected Value (+EV)
+  const oddsVal = Number(c.odds || 0);
+  const evVal = Number(c.expected_value || c.ev || 0);
+  const oddsDisplay = oddsVal > 1.0 ? `<span class="odds-badge">Cote: ${oddsVal.toFixed(2)}</span>` : '';
+  const isValueBet = evVal > 0 ? `<span class="value-bet-badge" style="color:#10b981; font-weight:bold;">🔥 +EV (${(evVal * 100).toFixed(1)}%)</span>` : '';
 
   return `
   <div class="coupon-card ${tierClass}">

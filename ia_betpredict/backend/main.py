@@ -9,6 +9,7 @@ import os
 import sys
 import datetime
 import asyncio
+from typing import Any
 
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if _BACKEND_DIR not in sys.path:
@@ -54,25 +55,25 @@ async def options_handler(request: Request, full_path: str):
 # Fonction utilitaire d'arbitrage Double Chance
 # ---------------------------------------------------------------------------
 
-def filter_best_double_chance(coupons: list[dict]) -> list[dict]:
+def filter_best_double_chance(coupons: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Conserve uniquement la meilleure Double Chance par match (ex: garde 1X a 80% et rejette 2X a 77%).
+    Conserve uniquement la meilleure Double Chance par match (ex: garde 1X à 80% et rejette 2X à 77%).
     Les autres types de paris sont conservés sans modification.
     """
-    dc_candidates: dict[str, dict] = {}
-    filtered_coupons: list[dict] = []
+    dc_candidates: dict[str, dict[str, Any]] = {}
+    filtered_coupons: list[dict[str, Any]] = []
 
     for c in coupons:
         pred_type = str(c.get("prediction_type", "")).strip().upper()
 
-        # Detection des paris de type Double Chance
+        # Détection des paris de type Double Chance
         is_dc = any(dc in pred_type for dc in ["DOUBLE CHANCE", "1X", "X2", "2X", "12"])
 
         if is_dc:
             match_key = str(c.get("event_id") or c.get("match_name"))
             confidence = float(c.get("confidence_rate", 0))
 
-            # Si pas encore enregistre ou si la confiance est supérieure, on remplace
+            # Si pas encore enregistré ou si la confiance est supérieure, on remplace
             if match_key not in dc_candidates or confidence > float(dc_candidates[match_key].get("confidence_rate", 0)):
                 dc_candidates[match_key] = c
         else:
@@ -97,7 +98,7 @@ async def get_todays_coupons(
     league: str | None = Query(default=None, description="Filtrer par ligue"),
     status: str | None = Query(default=None, description="Statut : 'En attente', 'Gagné', 'Perdu'"),
     min_confidence: float = Query(default=0.50, ge=0.0, le=1.0, description="Confiance min (ex: 0.50)"),
-    min_ev: float = Query(default=None, description="EV min (ex: 0.02 pour +2%)"),
+    min_ev: float | None = Query(default=None, description="EV min (ex: 0.02 pour +2%)"),
 ):
     """
     Renvoie les coupons du jour. 
@@ -144,7 +145,7 @@ def _fetch_coupons(
     min_confidence: float = 0.50, 
     min_ev: float | None = None,
     allow_fallback: bool = True
-) -> dict:
+) -> dict[str, Any]:
     """
     Récupère les coupons en BDD.
     Si aucun coupon n'est trouvé pour 'target_date' et que allow_fallback=True,
@@ -152,7 +153,7 @@ def _fetch_coupons(
     """
     try:
         base_conditions = ["confidence_rate >= %s"]
-        params = [min_confidence]
+        params: list[Any] = [min_confidence]
 
         if min_ev is not None:
             base_conditions.append("expected_value >= %s")
@@ -172,7 +173,7 @@ def _fetch_coupons(
             WHERE match_date = %s AND {where_clause}
             ORDER BY expected_value DESC, confidence_rate DESC
         """
-        rows = execute(query_date, tuple([target_date] + params), fetch=True)
+        rows = execute(query_date, tuple([target_date] + params), fetch=True) or []
 
         is_fallback = False
         effective_date = target_date
@@ -188,9 +189,10 @@ def _fetch_coupons(
             latest_date_res = execute(latest_date_query, tuple(params), fetch=True)
 
             if latest_date_res:
-                effective_date = str(latest_date_res[0]["match_date"])
+                raw_date = latest_date_res[0]["match_date"]
+                effective_date = raw_date.strftime("%Y-%m-%d") if isinstance(raw_date, (datetime.date, datetime.datetime)) else str(raw_date)
                 is_fallback = True
-                rows = execute(query_date, tuple([effective_date] + params), fetch=True)
+                rows = execute(query_date, tuple([effective_date] + params), fetch=True) or []
 
         return {
             "requested_date": target_date,
@@ -351,7 +353,7 @@ async def settle_finished_predictions():
         WHERE status = 'En attente'
         """, 
         fetch=True
-    )
+    ) or []
     
     if not pending:
         print("[Settler] Aucun coupon en attente.")
@@ -360,7 +362,10 @@ async def settle_finished_predictions():
     from scraper import fetch_all_matches
 
     # Indexation par date pour les coupons qui N'ONT PAS d'event_id
-    dates_without_id = set(str(p["match_date"]) for p in pending if not p.get("event_id") and p.get("match_date"))
+    dates_without_id = {
+        str(p["match_date"]) for p in pending 
+        if not p.get("event_id") and p.get("match_date")
+    }
     matches_by_date = {}
     
     for d in dates_without_id:

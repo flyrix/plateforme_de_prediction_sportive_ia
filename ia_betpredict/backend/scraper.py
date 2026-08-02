@@ -11,6 +11,7 @@ Supporte désormais les championnats Nordiques, Américains, Sud-Américains, Am
 import datetime
 import os
 import time
+from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from curl_cffi import requests
@@ -37,7 +38,7 @@ LEAGUE_IDS = {
     "LaLiga":                8,
     "Bundesliga":            35,
     "Serie A":               23,
-    "Ligue 1":               34,  # <-- Ajouté (France Ligue 1)
+    "Ligue 1":               34,
 }
 
 LEAGUE_ID_TO_NAME = {tid: name for name, tid in LEAGUE_IDS.items()}
@@ -63,8 +64,8 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-CACHE = {}
-ODDS_API_CACHE = {}
+CACHE: dict[str, Any] = {}
+ODDS_API_CACHE: dict[str, Any] = {}
 
 
 # ==========================================
@@ -77,7 +78,6 @@ def _fetch_via_scrapingant(url: str, timeout: int = 30) -> dict | None:
         return None
     
     encoded_url = quote(url, safe='')
-    # Passage en browser=true pour franchir la sécurité Cloudflare de Sofascore
     ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=true"
     
     try:
@@ -169,7 +169,7 @@ def fetch_odds_from_odds_api() -> list[dict]:
 
     url = f"https://api.odds-api.io/v1/odds?apiKey={ODDS_API_KEY}&sport=soccer"
     try:
-        resp = requests.get(url, timeout=15)
+        resp = SESSION.get(url, timeout=15)
         if resp.status_code == 200:
             data = resp.json()
             ODDS_API_CACHE["global_odds"] = data
@@ -371,7 +371,7 @@ def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
             elif "serie a" in tournament_name:
                 league_name = "Serie A"
             elif "ligue 1" in tournament_name:
-                league_name = "Ligue 1"  # <-- Ajouté (Match en String)
+                league_name = "Ligue 1"
             else:
                 league_name = tournament.get("name", "Other League")
 
@@ -421,10 +421,13 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
     print("[scraper] Fallback par ligue en cours…")
     all_matches = []
+    seen_ids = set()
     for league_name, tid in LEAGUE_IDS.items():
         matches = fetch_matches_for_league(league_name, tid, date_str)
-        if matches:
-            all_matches.extend(matches)
+        for m in matches:
+            if m["event_id"] not in seen_ids:
+                seen_ids.add(m["event_id"])
+                all_matches.append(m)
 
     print(f"[scraper] ✅ {len(all_matches)} match(s) total pour le {date_str}")
     return all_matches
@@ -470,7 +473,8 @@ def _get_team_features(team_id: int) -> dict:
         aws = ev.get("awayScore", {}).get("current", 0) or 0
         ts  = ev.get("startTimestamp", 0)
         gf, ga = (hs, aws) if ht_id == team_id else (aws, hs)
-        scored.append(gf); conceded.append(ga)
+        scored.append(gf)
+        conceded.append(ga)
         btts_l.append(1 if gf > 0 and ga > 0 else 0)
         over25_l.append(1 if gf + ga > 2.5 else 0)
         dates.append(ts)
@@ -525,7 +529,12 @@ def compute_features(match: dict) -> dict:
     else:
         h2h = {"h2h_over25_rate": 0.50, "h2h_btts_rate": 0.45}
 
-    from predictor import COUNTRY_ENCODING
+    try:
+        from predictor import COUNTRY_ENCODING
+        country_code = COUNTRY_ENCODING.get(match["league"], 0)
+    except ImportError:
+        country_code = 0
+
     is_neutral = 1 if is_friendly else 0
 
     return {
@@ -552,7 +561,7 @@ def compute_features(match: dict) -> dict:
         "win_rate_diff":     round(hf["win_rate"] - af["win_rate"], 2),
         "btts_rate_diff":    round(hf["btts_rate"] - af["btts_rate"], 2),
         "over25_rate_diff":  round(hf["over25_rate"] - af["over25_rate"], 2),
-        "Country_encoded":   COUNTRY_ENCODING.get(match["league"], 0),
+        "Country_encoded":   country_code,
     }
 
 
@@ -572,7 +581,7 @@ def fetch_matches_with_features(date_str: str | None = None) -> list[dict]:
         m["odds"]     = fetch_match_odds(m["event_id"], m["home_team"], m["away_team"])
         return m
 
-    # max_workers réduit à 2 pour ne pas surcharger les limites de requêtes simultanées des scrapers
+    # max_workers maintenu bas pour réguler le flux de requêtes simultanées
     with ThreadPoolExecutor(max_workers=2) as executor:
         processed_matches = list(executor.map(_process_match, upcoming_matches))
 
