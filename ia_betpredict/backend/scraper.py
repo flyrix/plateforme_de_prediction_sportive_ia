@@ -2,14 +2,13 @@
 scraper.py
 ----------
 Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore.
-Système de Scraping Hybride Résilient : ScrapingAnt (Prioritaire) -> ScraperAPI (Fallback 1) -> Direct (Fallback 2).
-Incorpore l'extraction automatique des cotes via Sofascore avec Fallback vers Odds-API.io
-pour le calcul de l'Expected Value (EV).
-Supporte désormais les championnats Nordiques, Américains, Sud-Américains, Amicaux et du Top 5 Europe au complet (incluant Ligue 1).
+Système de Scraping Hybride Résilient : ScraperAPI / Direct (Prioritaires pour le JSON) -> ScrapingAnt -> Odds-API.io (Fallback Cotes).
 """
 
 import datetime
+import json
 import os
+import re
 import time
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor
@@ -72,30 +71,18 @@ ODDS_API_CACHE: dict[str, Any] = {}
 # MODULES RESILIENTS DE SCRAPING (FAILOVER)
 # ==========================================
 
-def _fetch_via_scrapingant(url: str, timeout: int = 30) -> dict | None:
-    """Tentative via ScrapingAnt (Prioritaire)."""
-    if not SCRAPINGANT_KEY:
-        return None
-    
-    encoded_url = quote(url, safe='')
-    ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=true"
-    
+def _fetch_direct(url: str, timeout: int = 15) -> dict | None:
+    """1ère tentative direct curl_cffi avec impersonation Chrome."""
     try:
-        resp = SESSION.get(ant_url, timeout=timeout)
+        resp = SESSION.get(url, headers=HEADERS, timeout=timeout)
         if resp.status_code == 200:
             return resp.json()
-        elif resp.status_code == 423:
-            print("[scraper] ⚠️ ScrapingAnt bloqué/limite de concurrence atteinte (Code 423). Passage au fallback.")
-            return None
-        else:
-            print(f"[scraper] ⚠️ ScrapingAnt Code Status: {resp.status_code}")
-    except Exception as e:
-        print(f"[scraper] ⚠️ ScrapingAnt Erreur: {e}")
-        
+    except Exception:
+        pass
     return None
 
 def _fetch_via_scraperapi(url: str, timeout: int = 25) -> dict | None:
-    """Tentative via ScraperAPI (Fallback 1)."""
+    """2ème tentative via ScraperAPI (Idéal pour renvoyer du JSON brut sans rendu HTML)."""
     if not SCRAPER_API_KEY:
         return None
     target_url = (
@@ -115,25 +102,46 @@ def _fetch_via_scraperapi(url: str, timeout: int = 25) -> dict | None:
         print(f"[scraper] ⚠️ ScraperAPI Erreur: {e}")
     return None
 
-def _fetch_direct(url: str, timeout: int = 15) -> dict | None:
-    """Tentative directe curl_cffi (Fallback 2)."""
+def _fetch_via_scrapingant(url: str, timeout: int = 30) -> dict | None:
+    """3ème tentative via ScrapingAnt (Gestion des réponses JSON ou extraction HTML)."""
+    if not SCRAPINGANT_KEY:
+        return None
+    
+    encoded_url = quote(url, safe='')
+    # browser=false permet d'obtenir directement la réponse API JSON sans wrapper HTML
+    ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
+    
     try:
-        resp = SESSION.get(url, headers=HEADERS, timeout=timeout)
+        resp = SESSION.get(ant_url, timeout=timeout)
         if resp.status_code == 200:
-            return resp.json()
-    except Exception:
-        pass
+            try:
+                return resp.json()
+            except json.JSONDecodeError:
+                # Si ScrapingAnt renvoie du HTML enveloppé dans une balise pre/body
+                match = re.search(r"<pre[^>]*>(.*?)</pre>", resp.text, re.DOTALL | re.IGNORECASE)
+                if match:
+                    return json.loads(match.group(1))
+                match_body = re.search(r"<body[^>]*>(.*?)</body>", resp.text, re.DOTALL | re.IGNORECASE)
+                if match_body:
+                    return json.loads(match_body.group(1).strip())
+        elif resp.status_code == 423:
+            print("[scraper] ⚠️ ScrapingAnt bloqué/limite de concurrence (Code 423).")
+        else:
+            print(f"[scraper] ⚠️ ScrapingAnt Code Status: {resp.status_code}")
+    except Exception as e:
+        print(f"[scraper] ⚠️ ScrapingAnt Erreur: {e}")
+        
     return None
 
 def _get(url: str, retries: int = 2) -> dict | None:
     if url in CACHE:
         return CACHE[url]
 
-    # Ordre des providers: ScrapingAnt -> ScraperAPI -> Direct
+    # Ordre de priorité ajusté pour privilégier le format JSON direct : Direct -> ScraperAPI -> ScrapingAnt
     providers = [
-        ("ScrapingAnt", _fetch_via_scrapingant),
+        ("Direct", _fetch_direct),
         ("ScraperAPI", _fetch_via_scraperapi),
-        ("Direct", _fetch_direct)
+        ("ScrapingAnt", _fetch_via_scrapingant),
     ]
 
     for attempt in range(retries):
@@ -145,7 +153,7 @@ def _get(url: str, retries: int = 2) -> dict | None:
                     return data
             except Exception as exc:
                 print(f"[scraper] ⚠️ Erreur {name} pour {url} (Essai {attempt + 1}/{retries}) : {exc!r}")
-        time.sleep(1.0)  # Pause pour réguler le taux de requêtes
+        time.sleep(1.0)
 
     CACHE[url] = None
     return None
@@ -156,11 +164,9 @@ def _get(url: str, retries: int = 2) -> dict | None:
 # ==========================================
 
 def _similarity(a: str, b: str) -> float:
-    """ Calcule le score de ressemblance entre deux noms d'équipes (0.0 à 1.0) """
     return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
 
 def fetch_odds_from_odds_api() -> list[dict]:
-    """ Récupère la liste globale des cotes sur Odds-API.io avec mise en cache """
     if "global_odds" in ODDS_API_CACHE:
         return ODDS_API_CACHE["global_odds"]
 
@@ -180,7 +186,6 @@ def fetch_odds_from_odds_api() -> list[dict]:
     return []
 
 def fallback_odds_from_api(home_team: str, away_team: str) -> dict:
-    """ Cherche un match équivalent sur Odds-API.io si Sofascore est vide """
     all_odds_data = fetch_odds_from_odds_api()
     if not all_odds_data:
         return {}
@@ -205,14 +210,12 @@ def fallback_odds_from_api(home_team: str, away_team: str) -> dict:
         for site in best_match.get("sites", []):
             odds = site.get("odds", {})
             
-            # Cotes 1N2
             h2h = odds.get("h2h", [])
             if len(h2h) >= 3 and "1N2_H" not in parsed_odds:
                 parsed_odds["1N2_H"] = float(h2h[0])
                 parsed_odds["1N2_D"] = float(h2h[1])
                 parsed_odds["1N2_A"] = float(h2h[2])
 
-            # Cotes Over/Under 2.5
             totals = odds.get("totals", {})
             if "Over_2.5" not in parsed_odds and totals:
                 points = totals.get("points", [])
@@ -233,10 +236,6 @@ def fallback_odds_from_api(home_team: str, away_team: str) -> dict:
 # ==========================================
 
 def fetch_match_odds(event_id: int, home_team: str = "", away_team: str = "") -> dict:
-    """
-    Récupère les cotes du bookmaker depuis l'API Sofascore.
-    Si Sofascore ne renvoie aucune cote, bascule automatiquement sur Odds-API.io.
-    """
     data = _get(f"{BASE_URL}/event/{event_id}/odds/1/all")
     parsed_odds = {}
 
@@ -244,7 +243,6 @@ def fetch_match_odds(event_id: int, home_team: str = "", away_team: str = "") ->
         for market in data.get("markets", []):
             market_name = market.get("marketName", "").lower()
             
-            # Cotes 1N2 (Full Time)
             if market_name in ["full time", "1x2", "match result"]:
                 for choice in market.get("choices", []):
                     name = choice.get("name", "").upper()
@@ -262,7 +260,6 @@ def fetch_match_odds(event_id: int, home_team: str = "", away_team: str = "") ->
                         elif name in ["2", "AWAY"]:
                             parsed_odds["1N2_A"] = val
 
-            # Cotes Over/Under 2.5
             elif "total" in market_name or "goals" in market_name:
                 for choice in market.get("choices", []):
                     choice_name = choice.get("name", "").lower()
@@ -274,7 +271,6 @@ def fetch_match_odds(event_id: int, home_team: str = "", away_team: str = "") ->
                         elif "under" in choice_name and choice.get("decimalValue"):
                             parsed_odds["Under_2.5"] = float(choice["decimalValue"])
 
-            # Cotes Both Teams to Score (BTTS)
             elif "both teams to score" in market_name or "btts" in market_name:
                 for choice in market.get("choices", []):
                     choice_name = choice.get("name", "").lower()
@@ -283,9 +279,8 @@ def fetch_match_odds(event_id: int, home_team: str = "", away_team: str = "") ->
                     elif choice_name in ["no", "non"] and choice.get("decimalValue"):
                         parsed_odds["BTTS_No"] = float(choice["decimalValue"])
 
-    # Fallback si Sofascore n'a rien renvoyé
     if not parsed_odds and home_team and away_team:
-        print(f"[scraper] ⚠️ Cotes manquantes Sofascore pour {home_team} vs {away_team}. Tentative sur Odds-API.io...")
+        print(f"[scraper] ⚠️ Cotes manquantes Sofascore pour {home_team} vs {away_team}. Fallback Odds-API.io...")
         parsed_odds = fallback_odds_from_api(home_team, away_team)
 
     return parsed_odds
@@ -345,8 +340,9 @@ def _event_to_match(event: dict, league_name: str, live: bool = False) -> dict |
 
 
 def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
+    """Tentative de récupération globale des matchs programmés."""
     data = _get(f"{BASE_URL}/sport/football/scheduled-events/{date_str}")
-    if data is None:
+    if data is None or "events" not in data:
         return None
 
     matches = []
@@ -386,6 +382,7 @@ def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
 
 
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
+    """Récupération ciblée par ligue (Mode principal de secours)."""
     season_id = _get_current_season_id(tournament_id)
     if not season_id:
         return []
@@ -414,14 +411,17 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
     print(f"[scraper] Récupération des matchs pour le {date_str}…")
 
+    # 1. Tentative d'accès global
     scheduled_matches = _fetch_scheduled_matches(date_str)
-    if scheduled_matches is not None:
-        print(f"[scraper] ✅ {len(scheduled_matches)} match(s) total récupérés (Via Global Request)")
+    if scheduled_matches:
+        print(f"[scraper] ✅ {len(scheduled_matches)} match(s) récupérés via l'API globale.")
         return scheduled_matches
 
-    print("[scraper] Fallback par ligue en cours…")
+    # 2. Exécution du fallback par ligues cibles (devenu le mode de récupération principal le plus fiable)
+    print("[scraper] 🔄 Passage en mode d'extraction directe par ligue (Fallback principal)...")
     all_matches = []
     seen_ids = set()
+    
     for league_name, tid in LEAGUE_IDS.items():
         matches = fetch_matches_for_league(league_name, tid, date_str)
         for m in matches:
@@ -429,7 +429,7 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
                 seen_ids.add(m["event_id"])
                 all_matches.append(m)
 
-    print(f"[scraper] ✅ {len(all_matches)} match(s) total pour le {date_str}")
+    print(f"[scraper] ✅ {len(all_matches)} match(s) total récupérés pour le {date_str}")
     return all_matches
 
 
@@ -543,7 +543,7 @@ def compute_features(match: dict) -> dict:
         "diff_goals_exp":    round(hf["avg_scored"] - af["avg_scored"], 2),
         "total_goals_exp":   round(hf["avg_scored"] + af["avg_scored"], 2),
         "home_conceded_exp": hf["avg_conceded"],
-        "away_conceded_exp": af["avg_conceded"],
+        "away_conceded_exp": af["away_conceded"],
         "home_form_pts":     hf["form_pts"],
         "away_form_pts":     af["form_pts"],
         "home_win_rate":     hf["win_rate"],
@@ -581,7 +581,6 @@ def fetch_matches_with_features(date_str: str | None = None) -> list[dict]:
         m["odds"]     = fetch_match_odds(m["event_id"], m["home_team"], m["away_team"])
         return m
 
-    # max_workers maintenu bas pour réguler le flux de requêtes simultanées
     with ThreadPoolExecutor(max_workers=2) as executor:
         processed_matches = list(executor.map(_process_match, upcoming_matches))
 
