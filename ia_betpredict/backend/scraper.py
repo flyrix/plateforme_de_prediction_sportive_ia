@@ -2,7 +2,7 @@
 scraper.py
 ----------
 Récupère les matchs du jour sur les ligues cibles via l'API interne Sofascore.
-Système de Scraping Hybride Résilient : ScraperAPI / Direct (Prioritaires pour le JSON) -> ScrapingAnt -> Odds-API.io (Fallback Cotes).
+Système de Scraping Hybride Résilient : Direct (curl_cffi) -> ScraperAPI -> ScrapingBee -> Odds-API.io.
 """
 
 import datetime
@@ -45,11 +45,11 @@ SEASON_OVERRIDES: dict[int, int] = {}
 FORM_WINDOW = 5
 
 # Clés API d'environnement
-SCRAPINGANT_KEY = os.getenv("SCRAPINGANT_KEY", "").strip()
+SCRAPINGBEE_KEY = os.getenv("SCRAPINGBEE_KEY", "").strip()
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "").strip()
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "").strip()
 
-print(f"[DEBUG] SCRAPINGANT_KEY présente ? {'OUI' if SCRAPINGANT_KEY else 'NON (VIDE)'}")
+print(f"[DEBUG] SCRAPINGBEE_KEY présente ? {'OUI' if SCRAPINGBEE_KEY else 'NON (VIDE)'}")
 print(f"[DEBUG] SCRAPER_API_KEY présente ? {'OUI' if SCRAPER_API_KEY else 'NON (VIDE)'}")
 print(f"[DEBUG] ODDS_API_KEY présente ? {'OUI' if ODDS_API_KEY else 'NON (VIDE)'}")
 
@@ -71,8 +71,8 @@ ODDS_API_CACHE: dict[str, Any] = {}
 # MODULES RESILIENTS DE SCRAPING (FAILOVER)
 # ==========================================
 
-def _fetch_direct(url: str, timeout: int = 15) -> dict | None:
-    """1ère tentative direct curl_cffi avec impersonation Chrome."""
+def _fetch_direct(url: str, timeout: int = 8) -> dict | None:
+    """1ère tentative direct avec curl_cffi Chrome Impersonation."""
     try:
         resp = SESSION.get(url, headers=HEADERS, timeout=timeout)
         if resp.status_code == 200:
@@ -81,8 +81,9 @@ def _fetch_direct(url: str, timeout: int = 15) -> dict | None:
         pass
     return None
 
-def _fetch_via_scraperapi(url: str, timeout: int = 25) -> dict | None:
-    """2ème tentative via ScraperAPI (Idéal pour renvoyer du JSON brut sans rendu HTML)."""
+
+def _fetch_via_scraperapi(url: str, timeout: int = 12) -> dict | None:
+    """2ème tentative via ScraperAPI."""
     if not SCRAPER_API_KEY:
         return None
     target_url = (
@@ -90,58 +91,55 @@ def _fetch_via_scraperapi(url: str, timeout: int = 25) -> dict | None:
         f"api_key={SCRAPER_API_KEY}"
         f"&url={quote(url)}"
         f"&keep_headers=true"
-        f"&country_code=us"
     )
     try:
         resp = SESSION.get(target_url, headers=HEADERS, timeout=timeout)
         if resp.status_code == 200:
             return resp.json()
-        else:
-            print(f"[scraper] ⚠️ ScraperAPI Code Status: {resp.status_code}")
-    except Exception as e:
-        print(f"[scraper] ⚠️ ScraperAPI Erreur: {e}")
+    except Exception:
+        pass
     return None
 
-def _fetch_via_scrapingant(url: str, timeout: int = 30) -> dict | None:
-    """3ème tentative via ScrapingAnt (Gestion des réponses JSON ou extraction HTML)."""
-    if not SCRAPINGANT_KEY:
+
+def _fetch_via_scrapingbee(url: str, timeout: int = 15) -> dict | None:
+    """3ème tentative via ScrapingBee."""
+    if not SCRAPINGBEE_KEY:
         return None
     
-    encoded_url = quote(url, safe='')
-    # browser=false permet d'obtenir directement la réponse API JSON sans wrapper HTML
-    ant_url = f"https://api.scrapingant.com/v2/general?x-api-key={SCRAPINGANT_KEY}&url={encoded_url}&browser=false"
+    target_url = (
+        f"https://app.scrapingbee.com/api/v1/?"
+        f"api_key={SCRAPINGBEE_KEY}"
+        f"&url={quote(url)}"
+        f"&render_js=false"
+        f"&forward_headers=true"
+    )
     
     try:
-        resp = SESSION.get(ant_url, timeout=timeout)
+        resp = SESSION.get(target_url, headers=HEADERS, timeout=timeout)
         if resp.status_code == 200:
             try:
                 return resp.json()
             except json.JSONDecodeError:
-                # Si ScrapingAnt renvoie du HTML enveloppé dans une balise pre/body
                 match = re.search(r"<pre[^>]*>(.*?)</pre>", resp.text, re.DOTALL | re.IGNORECASE)
                 if match:
                     return json.loads(match.group(1))
                 match_body = re.search(r"<body[^>]*>(.*?)</body>", resp.text, re.DOTALL | re.IGNORECASE)
                 if match_body:
                     return json.loads(match_body.group(1).strip())
-        elif resp.status_code == 423:
-            print("[scraper] ⚠️ ScrapingAnt bloqué/limite de concurrence (Code 423).")
-        else:
-            print(f"[scraper] ⚠️ ScrapingAnt Code Status: {resp.status_code}")
-    except Exception as e:
-        print(f"[scraper] ⚠️ ScrapingAnt Erreur: {e}")
+    except Exception:
+        pass
         
     return None
+
 
 def _get(url: str, retries: int = 2) -> dict | None:
     if url in CACHE:
         return CACHE[url]
 
-    # Ordre de priorité ajusté pour privilégier le format JSON direct : Direct -> ScraperAPI -> ScrapingAnt
     providers = [
         ("Direct", _fetch_direct),
         ("ScraperAPI", _fetch_via_scraperapi),
-        ("ScrapingAnt", _fetch_via_scrapingant),
+        ("ScrapingBee", _fetch_via_scrapingbee),
     ]
 
     for attempt in range(retries):
@@ -151,9 +149,9 @@ def _get(url: str, retries: int = 2) -> dict | None:
                 if data is not None:
                     CACHE[url] = data
                     return data
-            except Exception as exc:
-                print(f"[scraper] ⚠️ Erreur {name} pour {url} (Essai {attempt + 1}/{retries}) : {exc!r}")
-        time.sleep(1.0)
+            except Exception:
+                pass
+        time.sleep(0.5)
 
     CACHE[url] = None
     return None
@@ -166,6 +164,7 @@ def _get(url: str, retries: int = 2) -> dict | None:
 def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
 
+
 def fetch_odds_from_odds_api() -> list[dict]:
     if "global_odds" in ODDS_API_CACHE:
         return ODDS_API_CACHE["global_odds"]
@@ -175,7 +174,7 @@ def fetch_odds_from_odds_api() -> list[dict]:
 
     url = f"https://api.odds-api.io/v1/odds?apiKey={ODDS_API_KEY}&sport=soccer"
     try:
-        resp = SESSION.get(url, timeout=15)
+        resp = SESSION.get(url, timeout=12)
         if resp.status_code == 200:
             data = resp.json()
             ODDS_API_CACHE["global_odds"] = data
@@ -184,6 +183,7 @@ def fetch_odds_from_odds_api() -> list[dict]:
         print(f"[scraper] ⚠️ Erreur lors de la requête Odds-API.io : {e}")
 
     return []
+
 
 def fallback_odds_from_api(home_team: str, away_team: str) -> dict:
     all_odds_data = fetch_odds_from_odds_api()
@@ -280,7 +280,6 @@ def fetch_match_odds(event_id: int, home_team: str = "", away_team: str = "") ->
                         parsed_odds["BTTS_No"] = float(choice["decimalValue"])
 
     if not parsed_odds and home_team and away_team:
-        print(f"[scraper] ⚠️ Cotes manquantes Sofascore pour {home_team} vs {away_team}. Fallback Odds-API.io...")
         parsed_odds = fallback_odds_from_api(home_team, away_team)
 
     return parsed_odds
@@ -382,7 +381,7 @@ def _fetch_scheduled_matches(date_str: str) -> list[dict] | None:
 
 
 def fetch_matches_for_league(league_name: str, tournament_id: int, date_str: str) -> list[dict]:
-    """Récupération ciblée par ligue (Mode principal de secours)."""
+    """Récupération ciblée par ligue."""
     season_id = _get_current_season_id(tournament_id)
     if not season_id:
         return []
@@ -411,13 +410,11 @@ def fetch_all_matches(date_str: str | None = None) -> list[dict]:
 
     print(f"[scraper] Récupération des matchs pour le {date_str}…")
 
-    # 1. Tentative d'accès global
     scheduled_matches = _fetch_scheduled_matches(date_str)
     if scheduled_matches:
         print(f"[scraper] ✅ {len(scheduled_matches)} match(s) récupérés via l'API globale.")
         return scheduled_matches
 
-    # 2. Exécution du fallback par ligues cibles (devenu le mode de récupération principal le plus fiable)
     print("[scraper] 🔄 Passage en mode d'extraction directe par ligue (Fallback principal)...")
     all_matches = []
     seen_ids = set()
@@ -543,7 +540,7 @@ def compute_features(match: dict) -> dict:
         "diff_goals_exp":    round(hf["avg_scored"] - af["avg_scored"], 2),
         "total_goals_exp":   round(hf["avg_scored"] + af["avg_scored"], 2),
         "home_conceded_exp": hf["avg_conceded"],
-        "away_conceded_exp": af["away_conceded"],
+        "away_conceded_exp": af["avg_conceded"],
         "home_form_pts":     hf["form_pts"],
         "away_form_pts":     af["form_pts"],
         "home_win_rate":     hf["win_rate"],
