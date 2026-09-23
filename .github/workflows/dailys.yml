@@ -1,10 +1,10 @@
 name: Daily Scraper & Prediction Job
 
-on:
+"""on:
   schedule:
-    - cron: '0 0 * * *'  # Exécution automatique chaque nuit à 00:00 UTC
-  workflow_dispatch:      # Permet le déclenchement manuel depuis l'onglet Actions
-
+    - cron: '0 0 * * *' # Exécution automatique chaque nuit à 00:00 UTC
+  workflow_dispatch:    # Permet le déclenchement manuel depuis l'onglet Actions
+"""
 jobs:
   run_daily_job:
     runs-on: ubuntu-latest
@@ -26,9 +26,9 @@ jobs:
       - name: Execute Daily Job
         working-directory: ia_betpredict/backend
         env:
-          SCRAPINGBEE_KEY: ${{ secrets.SCRAPINGANT_KEY }}
+          """SCRAPINGBEE_KEY: ${{ secrets.SCRAPINGANT_KEY }}
           SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}"""
         run: |
           python main.py
